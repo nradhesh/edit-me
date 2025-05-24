@@ -2,7 +2,6 @@
 
 <div align="center">
 
-[![GitHub](https://img.shields.io/github/license/nradhesh/edit-me)](https://github.com/nradhesh/edit-me/blob/main/LICENSE)
 [![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?style=flat&logo=docker&logoColor=white)](https://www.docker.com/)
 [![AWS](https://img.shields.io/badge/AWS-%23FF9900.svg?style=flat&logo=amazon-aws&logoColor=white)](https://aws.amazon.com/)
 [![Terraform](https://img.shields.io/badge/terraform-%235835CC.svg?style=flat&logo=terraform&logoColor=white)](https://www.terraform.io/)
@@ -11,8 +10,6 @@
 [![Piston](https://img.shields.io/badge/Piston-Compiler-2ea44f)](https://emkc.org/)
 [![Pollinations](https://img.shields.io/badge/Pollinations-AI-FF6B6B)](https://pollinations.ai/)
 
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](http://makeapullrequest.com)
-[![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)](https://github.com/nradhesh/edit-me/graphs/commit-activity)
 
 </div>
 
