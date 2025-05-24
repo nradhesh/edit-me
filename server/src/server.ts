@@ -1,21 +1,21 @@
-import express, { Response, Request } from "express"
+import express, { Request, Response } from "express"
 import dotenv from "dotenv"
 import http from "http"
 import cors from "cors"
-import { SocketEvent, SocketId } from "./types/socket"
-import { USER_CONNECTION_STATUS, User } from "./types/user"
 import { Server } from "socket.io"
 import path from "path"
+import mongoose from "mongoose"
+
+import { SocketEvent, SocketId } from "./types/socket"
+import { USER_CONNECTION_STATUS, User } from "./types/user"
+import UserModel from "./models/User"
 
 dotenv.config()
 
 const app = express()
-
 app.use(express.json())
-
 app.use(cors())
-
-app.use(express.static(path.join(__dirname, "public"))) // Serve static files
+app.use(express.static(path.join(__dirname, "public")))
 
 const server = http.createServer(app)
 const io = new Server(server, {
@@ -26,19 +26,19 @@ const io = new Server(server, {
 	pingTimeout: 60000,
 })
 
+mongoose
+	.connect(process.env.MONGODB_URI as string)
+	.then(() => console.log("MongoDB connected"))
+	.catch((err) => console.error("MongoDB connection error:", err))
+
 let userSocketMap: User[] = []
 
-// Function to get all users in a room
 function getUsersInRoom(roomId: string): User[] {
 	return userSocketMap.filter((user) => user.roomId == roomId)
 }
 
-// Function to get room id by socket id
 function getRoomId(socketId: SocketId): string | null {
-	const roomId = userSocketMap.find(
-		(user) => user.socketId === socketId
-	)?.roomId
-
+	const roomId = userSocketMap.find((user) => user.socketId === socketId)?.roomId
 	if (!roomId) {
 		console.error("Room ID is undefined for socket ID:", socketId)
 		return null
@@ -56,18 +56,16 @@ function getUserBySocketId(socketId: SocketId): User | null {
 }
 
 io.on("connection", (socket) => {
-	// Handle user actions
-	socket.on(SocketEvent.JOIN_REQUEST, ({ roomId, username }) => {
-		// Check is username exist in the room
-		const isUsernameExist = getUsersInRoom(roomId).filter(
+	socket.on(SocketEvent.JOIN_REQUEST, async ({ roomId, username }) => {
+		const isUsernameExist = getUsersInRoom(roomId).some(
 			(u) => u.username === username
 		)
-		if (isUsernameExist.length > 0) {
+		if (isUsernameExist) {
 			io.to(socket.id).emit(SocketEvent.USERNAME_EXISTS)
 			return
 		}
 
-		const user = {
+		const user: User = {
 			username,
 			roomId,
 			status: USER_CONNECTION_STATUS.ONLINE,
@@ -81,41 +79,39 @@ io.on("connection", (socket) => {
 		socket.broadcast.to(roomId).emit(SocketEvent.USER_JOINED, { user })
 		const users = getUsersInRoom(roomId)
 		io.to(socket.id).emit(SocketEvent.JOIN_ACCEPTED, { user, users })
+
+		try {
+			await UserModel.create(user)
+		} catch (err) {
+			console.error("Error saving user to MongoDB:", err)
+		}
 	})
 
 	socket.on("disconnecting", () => {
 		const user = getUserBySocketId(socket.id)
 		if (!user) return
 		const roomId = user.roomId
-		socket.broadcast
-			.to(roomId)
-			.emit(SocketEvent.USER_DISCONNECTED, { user })
+		socket.broadcast.to(roomId).emit(SocketEvent.USER_DISCONNECTED, { user })
 		userSocketMap = userSocketMap.filter((u) => u.socketId !== socket.id)
 		socket.leave(roomId)
 	})
 
-	socket.on(
-		SocketEvent.SYNC_FILE_STRUCTURE,
-		({ fileStructure, openFiles, activeFile, socketId }) => {
-			io.to(socketId).emit(SocketEvent.SYNC_FILE_STRUCTURE, {
-				fileStructure,
-				openFiles,
-				activeFile,
-			})
-		}
-	)
+	socket.on(SocketEvent.SYNC_FILE_STRUCTURE, ({ fileStructure, openFiles, activeFile, socketId }) => {
+		io.to(socketId).emit(SocketEvent.SYNC_FILE_STRUCTURE, {
+			fileStructure,
+			openFiles,
+			activeFile,
+		})
+	})
 
-	socket.on(
-		SocketEvent.DIRECTORY_CREATED,
-		({ parentDirId, newDirectory }) => {
-			const roomId = getRoomId(socket.id)
-			if (!roomId) return
-			socket.broadcast.to(roomId).emit(SocketEvent.DIRECTORY_CREATED, {
-				parentDirId,
-				newDirectory,
-			})
-		}
-	)
+	socket.on(SocketEvent.DIRECTORY_CREATED, ({ parentDirId, newDirectory }) => {
+		const roomId = getRoomId(socket.id)
+		if (!roomId) return
+		socket.broadcast.to(roomId).emit(SocketEvent.DIRECTORY_CREATED, {
+			parentDirId,
+			newDirectory,
+		})
+	})
 
 	socket.on(SocketEvent.DIRECTORY_UPDATED, ({ dirId, children }) => {
 		const roomId = getRoomId(socket.id)
@@ -138,17 +134,16 @@ io.on("connection", (socket) => {
 	socket.on(SocketEvent.DIRECTORY_DELETED, ({ dirId }) => {
 		const roomId = getRoomId(socket.id)
 		if (!roomId) return
-		socket.broadcast
-			.to(roomId)
-			.emit(SocketEvent.DIRECTORY_DELETED, { dirId })
+		socket.broadcast.to(roomId).emit(SocketEvent.DIRECTORY_DELETED, { dirId })
 	})
 
 	socket.on(SocketEvent.FILE_CREATED, ({ parentDirId, newFile }) => {
 		const roomId = getRoomId(socket.id)
 		if (!roomId) return
-		socket.broadcast
-			.to(roomId)
-			.emit(SocketEvent.FILE_CREATED, { parentDirId, newFile })
+		socket.broadcast.to(roomId).emit(SocketEvent.FILE_CREATED, {
+			parentDirId,
+			newFile,
+		})
 	})
 
 	socket.on(SocketEvent.FILE_UPDATED, ({ fileId, newContent }) => {
@@ -175,48 +170,40 @@ io.on("connection", (socket) => {
 		socket.broadcast.to(roomId).emit(SocketEvent.FILE_DELETED, { fileId })
 	})
 
-	// Handle user status
 	socket.on(SocketEvent.USER_OFFLINE, ({ socketId }) => {
-		userSocketMap = userSocketMap.map((user) => {
-			if (user.socketId === socketId) {
-				return { ...user, status: USER_CONNECTION_STATUS.OFFLINE }
-			}
-			return user
-		})
+		userSocketMap = userSocketMap.map((user) =>
+			user.socketId === socketId
+				? { ...user, status: USER_CONNECTION_STATUS.OFFLINE }
+				: user
+		)
 		const roomId = getRoomId(socketId)
 		if (!roomId) return
 		socket.broadcast.to(roomId).emit(SocketEvent.USER_OFFLINE, { socketId })
 	})
 
 	socket.on(SocketEvent.USER_ONLINE, ({ socketId }) => {
-		userSocketMap = userSocketMap.map((user) => {
-			if (user.socketId === socketId) {
-				return { ...user, status: USER_CONNECTION_STATUS.ONLINE }
-			}
-			return user
-		})
+		userSocketMap = userSocketMap.map((user) =>
+			user.socketId === socketId
+				? { ...user, status: USER_CONNECTION_STATUS.ONLINE }
+				: user
+		)
 		const roomId = getRoomId(socketId)
 		if (!roomId) return
 		socket.broadcast.to(roomId).emit(SocketEvent.USER_ONLINE, { socketId })
 	})
 
-	// Handle chat actions
 	socket.on(SocketEvent.SEND_MESSAGE, ({ message }) => {
 		const roomId = getRoomId(socket.id)
 		if (!roomId) return
-		socket.broadcast
-			.to(roomId)
-			.emit(SocketEvent.RECEIVE_MESSAGE, { message })
+		socket.broadcast.to(roomId).emit(SocketEvent.RECEIVE_MESSAGE, { message })
 	})
 
-	// Handle cursor position
 	socket.on(SocketEvent.TYPING_START, ({ cursorPosition }) => {
-		userSocketMap = userSocketMap.map((user) => {
-			if (user.socketId === socket.id) {
-				return { ...user, typing: true, cursorPosition }
-			}
-			return user
-		})
+		userSocketMap = userSocketMap.map((user) =>
+			user.socketId === socket.id
+				? { ...user, typing: true, cursorPosition }
+				: user
+		)
 		const user = getUserBySocketId(socket.id)
 		if (!user) return
 		const roomId = user.roomId
@@ -224,12 +211,9 @@ io.on("connection", (socket) => {
 	})
 
 	socket.on(SocketEvent.TYPING_PAUSE, () => {
-		userSocketMap = userSocketMap.map((user) => {
-			if (user.socketId === socket.id) {
-				return { ...user, typing: false }
-			}
-			return user
-		})
+		userSocketMap = userSocketMap.map((user) =>
+			user.socketId === socket.id ? { ...user, typing: false } : user
+		)
 		const user = getUserBySocketId(socket.id)
 		if (!user) return
 		const roomId = user.roomId
@@ -239,33 +223,38 @@ io.on("connection", (socket) => {
 	socket.on(SocketEvent.REQUEST_DRAWING, () => {
 		const roomId = getRoomId(socket.id)
 		if (!roomId) return
-		socket.broadcast
-			.to(roomId)
-			.emit(SocketEvent.REQUEST_DRAWING, { socketId: socket.id })
+		socket.broadcast.to(roomId).emit(SocketEvent.REQUEST_DRAWING, {
+			socketId: socket.id,
+		})
 	})
 
 	socket.on(SocketEvent.SYNC_DRAWING, ({ drawingData, socketId }) => {
-		socket.broadcast
-			.to(socketId)
-			.emit(SocketEvent.SYNC_DRAWING, { drawingData })
+		socket.broadcast.to(socketId).emit(SocketEvent.SYNC_DRAWING, { drawingData })
 	})
 
 	socket.on(SocketEvent.DRAWING_UPDATE, ({ snapshot }) => {
 		const roomId = getRoomId(socket.id)
 		if (!roomId) return
-		socket.broadcast.to(roomId).emit(SocketEvent.DRAWING_UPDATE, {
-			snapshot,
-		})
+		socket.broadcast.to(roomId).emit(SocketEvent.DRAWING_UPDATE, { snapshot })
 	})
 })
 
-const PORT = process.env.PORT || 3000
+// API route to retrieve all users stored in MongoDB
+app.get("/api/users", async (req: Request, res: Response) => {
+	try {
+		const users = await UserModel.find({})
+		res.json(users)
+	} catch (err) {
+		res.status(500).json({ error: "Failed to fetch users" })
+	}
+})
 
+// Serve frontend
 app.get("/", (req: Request, res: Response) => {
-	// Send the index.html file
 	res.sendFile(path.join(__dirname, "..", "public", "index.html"))
 })
 
+const PORT = process.env.PORT || 3000
 server.listen(PORT, () => {
 	console.log(`Listening on port ${PORT}`)
 })
