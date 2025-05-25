@@ -26,10 +26,41 @@ const io = new Server(server, {
 	pingTimeout: 60000,
 })
 
+// MongoDB connection options
+const mongooseOptions = {
+	serverSelectionTimeoutMS: 5000, // Timeout after 5s instead of 30s
+	socketTimeoutMS: 45000, // Close sockets after 45s of inactivity
+	connectTimeoutMS: 10000, // Give up initial connection after 10s
+	maxPoolSize: 10, // Maintain up to 10 socket connections
+	minPoolSize: 5, // Maintain at least 5 socket connections
+	retryWrites: true,
+	retryReads: true
+};
+
 mongoose
-	.connect(process.env.MONGODB_URI as string)
-	.then(() => console.log("MongoDB connected"))
-	.catch((err) => console.error("MongoDB connection error:", err))
+	.connect(process.env.MONGODB_URI as string, mongooseOptions)
+	.then(() => {
+		console.log("MongoDB connected successfully");
+		console.log("Connection state:", mongoose.connection.readyState);
+	})
+	.catch((err) => {
+		console.error("MongoDB connection error:", err);
+		console.error("Connection string (without password):", 
+			(process.env.MONGODB_URI as string).replace(/\/\/[^:]+:[^@]+@/, '//****:****@'));
+	});
+
+// Add connection event handlers
+mongoose.connection.on('connected', () => {
+	console.log('Mongoose connected to MongoDB');
+});
+
+mongoose.connection.on('error', (err) => {
+	console.error('Mongoose connection error:', err);
+});
+
+mongoose.connection.on('disconnected', () => {
+	console.log('Mongoose disconnected from MongoDB');
+});
 
 let userSocketMap: User[] = []
 
@@ -239,6 +270,21 @@ io.on("connection", (socket) => {
 	})
 })
 
+// Database connection check middleware
+const checkDbConnection = (req: Request, res: Response, next: Function) => {
+	if (mongoose.connection.readyState !== 1) {
+		return res.status(503).json({
+			error: "Database connection not ready",
+			state: mongoose.connection.readyState,
+			message: "Please try again in a few moments"
+		});
+	}
+	next();
+};
+
+// Apply middleware to all API routes
+app.use("/api", checkDbConnection);
+
 // Add a test endpoint
 app.get("/api/test", (req: Request, res: Response) => {
 	res.json({ message: "API is working!" });
@@ -258,14 +304,15 @@ app.get("/api/health", (req: Request, res: Response) => {
 app.get("/api/users", async (req: Request, res: Response) => {
 	try {
 		console.log("Attempting to fetch users from MongoDB...");
-		const users = await UserModel.find({});
+		const users = await UserModel.find({}).maxTimeMS(5000); // Add timeout to the query
 		console.log(`Successfully fetched ${users.length} users`);
 		res.json(users);
 	} catch (err) {
 		console.error("Detailed error fetching users:", err);
 		res.status(500).json({ 
 			error: "Failed to fetch users",
-			details: err instanceof Error ? err.message : "Unknown error"
+			details: err instanceof Error ? err.message : "Unknown error",
+			connectionState: mongoose.connection.readyState
 		});
 	}
 });
