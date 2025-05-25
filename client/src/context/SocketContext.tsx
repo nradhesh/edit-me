@@ -1,30 +1,13 @@
 /* eslint-disable react-refresh/only-export-components */
-import { DrawingData } from "@/types/app"
-import {
-    SocketContext as SocketContextType,
-    SocketEvent,
-    SocketId,
-} from "@/types/socket"
-import { RemoteUser, USER_STATUS, User } from "@/types/user"
-import {
-    ReactNode,
-    createContext,
-    useCallback,
-    useContext,
-    useEffect,
-    useMemo,
-    useState,
-} from "react"
-import { toast } from "react-hot-toast"
+import { ReactNode, createContext, useContext, useEffect, useState } from "react"
 import { io, Socket } from "socket.io-client"
-import { useAppContext } from "./AppContext"
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3000"
 
 interface SocketContext {
 	socket: Socket
 	isConnected: boolean
-	emit: (event: string, data: any) => void
+	emit: (event: string, data: unknown) => void
 	status: 'connected' | 'disconnected' | 'error'
 }
 
