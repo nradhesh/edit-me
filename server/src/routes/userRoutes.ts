@@ -8,7 +8,7 @@ import jwt from "jsonwebtoken"
 const router: Router = express.Router();
 
 // Get all users with timeout and error handling
-router.get('/', async (req: express.Request, res: express.Response) => {
+router.get('/', async (req: Request, res: Response) => {
   try {
     const users = await User.find()
       .select('-password') // Exclude password field
@@ -27,7 +27,7 @@ router.get('/', async (req: express.Request, res: express.Response) => {
 });
 
 // Get user by ID
-router.get('/:id', async (req: express.Request, res: express.Response) => {
+router.get('/:id', async (req: Request, res: Response) => {
   try {
     const user = await User.findById(req.params.id)
       .select('-password')
