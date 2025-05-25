@@ -47,13 +47,43 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
     const [channel, setChannel] = useState<Channel | null>(null)
     const [userId, setUserId] = useState<string | null>(null)
 
-    // Initialize Pusher
+    // Add connection status check
+    useEffect(() => {
+        const checkConnection = async () => {
+            try {
+                const response = await fetch(`${BACKEND_URL}/api/test-pusher`);
+                const data = await response.json();
+                console.log('Pusher test response:', data);
+                
+                if (data.status === 'error') {
+                    console.error('Pusher configuration error:', data);
+                    handleError(new Error('Pusher configuration error: ' + data.message));
+                }
+            } catch (error) {
+                console.error('Failed to check Pusher connection:', error);
+                handleError(error);
+            }
+        };
+
+        checkConnection();
+    }, []);
+
+    // Initialize Pusher with better error handling
     useEffect(() => {
         if (!PUSHER_KEY || !PUSHER_CLUSTER) {
-            console.error('Pusher configuration missing');
+            console.error('Pusher configuration missing:', {
+                key: PUSHER_KEY ? 'present' : 'missing',
+                cluster: PUSHER_CLUSTER ? 'present' : 'missing'
+            });
             setStatus(USER_STATUS.CONNECTION_FAILED);
             return;
         }
+
+        console.log('Initializing Pusher with:', {
+            key: PUSHER_KEY.substring(0, 5) + '...',
+            cluster: PUSHER_CLUSTER,
+            backendUrl: BACKEND_URL
+        });
 
         const pusherClient = new Pusher(PUSHER_KEY, {
             cluster: PUSHER_CLUSTER,
@@ -63,27 +93,55 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
                 headers: {
                     'Access-Control-Allow-Origin': '*'
                 }
-            }
+            },
+            // Add more detailed logging
+            activityTimeout: 30000,
+            pongTimeout: 15000,
+            maxReconnectionAttempts: 5,
+            maxReconnectGap: 10000
+        });
+
+        pusherClient.connection.bind('state_change', (states: any) => {
+            console.log('Pusher connection state changed:', {
+                previous: states.previous,
+                current: states.current
+            });
         });
 
         pusherClient.connection.bind('connected', () => {
             console.log('Pusher connected successfully');
+            console.log('Connection details:', {
+                socketId: pusherClient.connection.socket_id,
+                state: pusherClient.connection.state,
+                activityTimeout: pusherClient.connection.options.activityTimeout,
+                pongTimeout: pusherClient.connection.options.pongTimeout
+            });
             setStatus(USER_STATUS.INITIAL);
         });
 
         pusherClient.connection.bind('error', (err: any) => {
             console.error('Pusher connection error:', err);
+            console.log('Connection state at error:', {
+                state: pusherClient.connection.state,
+                socketId: pusherClient.connection.socket_id,
+                error: err
+            });
             handleError(err);
         });
 
         pusherClient.connection.bind('disconnected', () => {
             console.log('Pusher disconnected');
+            console.log('Connection state at disconnect:', {
+                state: pusherClient.connection.state,
+                socketId: pusherClient.connection.socket_id
+            });
             setStatus(USER_STATUS.DISCONNECTED);
         });
 
         setPusher(pusherClient);
 
         return () => {
+            console.log('Cleaning up Pusher connection');
             pusherClient.disconnect();
         };
     }, []);

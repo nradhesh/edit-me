@@ -299,6 +299,42 @@ app.get('/api/test-db', async (req, res) => {
 	}
 });
 
+// Add a test endpoint for Pusher
+app.get("/api/test-pusher", async (req: Request, res: Response) => {
+    try {
+        // Test Pusher connection
+        await pusher.trigger('test-channel', 'test-event', {
+            message: 'Test message',
+            timestamp: new Date().toISOString()
+        });
+
+        res.status(200).json({
+            status: "ok",
+            message: "Pusher test successful",
+            config: {
+                appId: process.env.PUSHER_APP_ID ? 'configured' : 'missing',
+                key: process.env.PUSHER_KEY ? 'configured' : 'missing',
+                cluster: process.env.PUSHER_CLUSTER ? 'configured' : 'missing',
+                secret: process.env.PUSHER_SECRET ? 'configured' : 'missing'
+            },
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error('Pusher test failed:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Pusher test failed',
+            error: error instanceof Error ? error.message : 'Unknown error',
+            config: {
+                appId: process.env.PUSHER_APP_ID ? 'configured' : 'missing',
+                key: process.env.PUSHER_KEY ? 'configured' : 'missing',
+                cluster: process.env.PUSHER_CLUSTER ? 'configured' : 'missing',
+                secret: process.env.PUSHER_SECRET ? 'configured' : 'missing'
+            }
+        });
+    }
+});
+
 // Serve frontend
 app.get("/", (req: Request, res: Response) => {
 	res.sendFile(path.join(__dirname, "..", "public", "index.html"))
