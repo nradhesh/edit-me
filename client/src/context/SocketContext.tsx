@@ -13,9 +13,10 @@ import {
     useContext,
     useEffect,
     useMemo,
+    useState,
 } from "react"
 import { toast } from "react-hot-toast"
-import { Socket, io } from "socket.io-client"
+import Pusher, { Channel, PresenceChannel } from "pusher-js"
 import { useAppContext } from "./AppContext"
 
 const SocketContext = createContext<SocketContextType | null>(null)
@@ -29,6 +30,8 @@ export const useSocket = (): SocketContextType => {
 }
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3000"
+const PUSHER_KEY = import.meta.env.VITE_PUSHER_KEY || ""
+const PUSHER_CLUSTER = import.meta.env.VITE_PUSHER_CLUSTER || ""
 
 const SocketProvider = ({ children }: { children: ReactNode }) => {
     const {
@@ -39,40 +42,64 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
         drawingData,
         setDrawingData,
     } = useAppContext()
-    const socket: Socket = useMemo(
-        () =>
-            io(BACKEND_URL, {
-                reconnectionAttempts: 5,
-                reconnectionDelay: 1000,
-                reconnectionDelayMax: 5000,
-                timeout: 20000,
-                autoConnect: true,
-                transports: ['polling'],
-                path: '/socket.io/',
-                forceNew: true,
-                withCredentials: true,
-                upgrade: false,
-                rememberUpgrade: false,
-                extraHeaders: {
+
+    const [pusher, setPusher] = useState<Pusher | null>(null)
+    const [channel, setChannel] = useState<Channel | null>(null)
+    const [userId, setUserId] = useState<string | null>(null)
+
+    // Initialize Pusher
+    useEffect(() => {
+        if (!PUSHER_KEY || !PUSHER_CLUSTER) {
+            console.error('Pusher configuration missing');
+            setStatus(USER_STATUS.CONNECTION_FAILED);
+            return;
+        }
+
+        const pusherClient = new Pusher(PUSHER_KEY, {
+            cluster: PUSHER_CLUSTER,
+            enabledTransports: ['ws', 'wss'],
+            authEndpoint: `${BACKEND_URL}/api/pusher/auth`,
+            auth: {
+                headers: {
                     'Access-Control-Allow-Origin': '*'
                 }
-            }),
-        [],
-    )
+            }
+        });
+
+        pusherClient.connection.bind('connected', () => {
+            console.log('Pusher connected successfully');
+            setStatus(USER_STATUS.INITIAL);
+        });
+
+        pusherClient.connection.bind('error', (err: any) => {
+            console.error('Pusher connection error:', err);
+            handleError(err);
+        });
+
+        pusherClient.connection.bind('disconnected', () => {
+            console.log('Pusher disconnected');
+            setStatus(USER_STATUS.DISCONNECTED);
+        });
+
+        setPusher(pusherClient);
+
+        return () => {
+            pusherClient.disconnect();
+        };
+    }, []);
 
     const handleError = useCallback(
         (err: any) => {
-            console.error("Socket connection error:", err);
+            console.error("Connection error:", err);
             setStatus(USER_STATUS.CONNECTION_FAILED);
             toast.dismiss();
             
-            // More detailed error message based on error type
             let errorMessage = 'Failed to connect to server';
             if (err.message) {
                 if (err.message.includes('timeout')) {
                     errorMessage = 'Connection timed out. Please check your internet connection.';
-                } else if (err.message.includes('xhr poll error')) {
-                    errorMessage = 'Polling connection failed. Please try again.';
+                } else if (err.message.includes('pusher')) {
+                    errorMessage = 'Real-time connection failed. Please try again.';
                 } else {
                     errorMessage = `Connection error: ${err.message}`;
                 }
@@ -80,103 +107,131 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
             
             toast.error(errorMessage);
             
-            // Log connection details for debugging
             console.log('Connection details:', {
                 backendUrl: BACKEND_URL,
-                socketId: socket.id,
-                connected: socket.connected,
-                disconnected: socket.disconnected,
-                transport: socket.io.engine?.transport?.name,
-                upgrade: socket.io.engine?.upgrade,
-                readyState: socket.io.engine?.readyState,
-                polling: socket.io.engine?.transport?.name === 'polling',
-                pollingWritable: socket.io.engine?.transport?.writable
+                pusherKey: PUSHER_KEY ? 'configured' : 'missing',
+                pusherCluster: PUSHER_CLUSTER ? 'configured' : 'missing',
+                userId,
+                channel: channel?.name,
+                connected: pusher?.connection.state === 'connected'
             });
         },
-        [setStatus, socket],
+        [setStatus, pusher, channel, userId],
     )
 
-    const handleUsernameExist = useCallback(() => {
-        toast.dismiss()
-        setStatus(USER_STATUS.INITIAL)
-        toast.error(
-            "The username you chose already exists in the room. Please choose a different username.",
-        )
-    }, [setStatus])
+    const joinRoom = useCallback(async (roomId: string, username: string) => {
+        if (!pusher) {
+            handleError(new Error('Pusher not initialized'));
+            return;
+        }
 
-    const handleJoiningAccept = useCallback(
-        ({ user, users }: { user: User; users: RemoteUser[] }) => {
-            setCurrentUser(user)
-            setUsers(users)
-            toast.dismiss()
-            setStatus(USER_STATUS.JOINED)
+        try {
+            const response = await fetch(`${BACKEND_URL}/api/join-room`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ roomId, username }),
+            });
 
-            if (users.length > 1) {
-                toast.loading("Syncing data, please wait...")
+            if (!response.ok) {
+                const data = await response.json();
+                if (data.error === 'Username already exists') {
+                    toast.error('Username already exists in this room');
+                    setStatus(USER_STATUS.INITIAL);
+                    return;
+                }
+                throw new Error(data.error || 'Failed to join room');
             }
-        },
-        [setCurrentUser, setStatus, setUsers],
-    )
 
-    const handleUserLeft = useCallback(
-        ({ user }: { user: User }) => {
-            toast.success(`${user.username} left the room`)
-            setUsers(users.filter((u: User) => u.username !== user.username))
-        },
-        [setUsers, users],
-    )
+            const { userId: newUserId } = await response.json();
+            setUserId(newUserId);
 
-    const handleRequestDrawing = useCallback(
-        ({ socketId }: { socketId: SocketId }) => {
-            socket.emit(SocketEvent.SYNC_DRAWING, { socketId, drawingData })
-        },
-        [drawingData, socket],
-    )
+            // Subscribe to room channel
+            const roomChannel = pusher.subscribe(`presence-${roomId}`) as PresenceChannel;
+            setChannel(roomChannel);
 
-    const handleDrawingSync = useCallback(
-        ({ drawingData }: { drawingData: DrawingData }) => {
-            setDrawingData(drawingData)
-        },
-        [setDrawingData],
-    )
+            // Bind to room events
+            roomChannel.bind(SocketEvent.USER_JOINED, ({ user }: { user: User }) => {
+                setUsers(prev => [...prev, user]);
+                toast.success(`${user.username} joined the room`);
+            });
 
-    useEffect(() => {
-        const handleConnect = () => {
-            console.log('Socket connected successfully');
-            console.log('Transport:', socket.io.engine?.transport?.name);
-            toast.dismiss();
-            setStatus(USER_STATUS.INITIAL);
-        };
+            roomChannel.bind(SocketEvent.USER_DISCONNECTED, ({ user }: { user: User }) => {
+                setUsers(prev => prev.filter(u => u.socketId !== user.socketId));
+                toast.success(`${user.username} left the room`);
+            });
 
-        const handleConnectError = (error: Error) => {
-            console.error('Socket connection error:', error);
+            roomChannel.bind(SocketEvent.JOIN_ACCEPTED, ({ user, users }: { user: User; users: RemoteUser[] }) => {
+                setCurrentUser(user);
+                setUsers(users);
+                toast.dismiss();
+                setStatus(USER_STATUS.JOINED);
+
+                if (users.length > 1) {
+                    toast.loading("Syncing data, please wait...");
+                }
+            });
+
+            // Bind to other events
+            roomChannel.bind(SocketEvent.SYNC_FILE_STRUCTURE, ({ fileStructure, openFiles, activeFile }) => {
+                // Handle file structure sync
+            });
+
+            roomChannel.bind(SocketEvent.DIRECTORY_CREATED, ({ parentDirId, newDirectory }) => {
+                // Handle directory creation
+            });
+
+            roomChannel.bind(SocketEvent.FILE_UPDATED, ({ fileId, newContent }) => {
+                // Handle file updates
+            });
+
+            roomChannel.bind(SocketEvent.DRAWING_UPDATE, ({ snapshot }) => {
+                // Handle drawing updates
+            });
+
+        } catch (error) {
             handleError(error);
-        };
+        }
+    }, [pusher, handleError, setUsers, setCurrentUser, setStatus]);
 
-        const handleDisconnect = (reason: string) => {
-            console.log('Socket disconnected:', reason);
-            if (reason === 'io server disconnect') {
-                // Server initiated disconnect, try to reconnect
-                socket.connect();
-            }
-            setStatus(USER_STATUS.DISCONNECTED);
-        };
+    const leaveRoom = useCallback(async () => {
+        if (!pusher || !channel || !userId) return;
 
-        socket.on('connect', handleConnect);
-        socket.on('connect_error', handleConnectError);
-        socket.on('disconnect', handleDisconnect);
+        try {
+            await fetch(`${BACKEND_URL}/api/leave-room`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ userId }),
+            });
 
-        return () => {
-            socket.off('connect', handleConnect);
-            socket.off('connect_error', handleConnectError);
-            socket.off('disconnect', handleDisconnect);
-        };
-    }, [socket, handleError, setStatus]);
+            channel.unbind_all();
+            pusher.unsubscribe(channel.name);
+            setChannel(null);
+            setUserId(null);
+            setStatus(USER_STATUS.INITIAL);
+        } catch (error) {
+            console.error('Error leaving room:', error);
+        }
+    }, [pusher, channel, userId, setStatus]);
+
+    const emit = useCallback((event: string, data: any) => {
+        if (!channel) {
+            console.error('No channel available for emitting event');
+            return;
+        }
+        channel.trigger(event, data);
+    }, [channel]);
 
     return (
         <SocketContext.Provider
             value={{
-                socket,
+                joinRoom,
+                leaveRoom,
+                emit,
+                isConnected: pusher?.connection.state === 'connected',
             }}
         >
             {children}

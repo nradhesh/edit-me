@@ -1,10 +1,9 @@
 import express, { Request, Response } from "express"
 import dotenv from "dotenv"
-import http from "http"
 import cors from "cors"
-import { Server } from "socket.io"
 import path from "path"
 import mongoose from "mongoose"
+import Pusher from "pusher"
 import { userRouter } from './routes/userRoutes'
 import { SocketEvent, SocketId } from "./types/socket"
 import { USER_CONNECTION_STATUS, User } from "./types/user"
@@ -17,26 +16,14 @@ app.use(express.json())
 app.use(cors())
 app.use(express.static(path.join(__dirname, "public")))
 
-const server = http.createServer(app)
-const io = new Server(server, {
-	cors: {
-		origin: "*",
-		methods: ["GET", "POST"],
-		credentials: true
-	},
-	maxHttpBufferSize: 1e8,
-	pingTimeout: 60000,
-	transports: ['polling'],
-	allowEIO3: true,
-	path: '/socket.io/',
-	connectTimeout: 45000,
-	upgradeTimeout: 30000,
-	allowUpgrades: false,
-	perMessageDeflate: false,
-	httpCompression: {
-		threshold: 2048
-	}
-})
+// Initialize Pusher
+const pusher = new Pusher({
+	appId: process.env.PUSHER_APP_ID!,
+	key: process.env.PUSHER_KEY!,
+	secret: process.env.PUSHER_SECRET!,
+	cluster: process.env.PUSHER_CLUSTER!,
+	useTLS: true
+});
 
 // MongoDB connection state
 let isConnected = false;
@@ -109,223 +96,139 @@ function getUsersInRoom(roomId: string): Array<User> {
 	return userSocketMap.filter((user) => user.roomId === roomId)
 }
 
-function getRoomId(socketId: SocketId): string {
-	const user = userSocketMap.find((user) => user.socketId === socketId);
+function getRoomId(userId: string): string {
+	const user = userSocketMap.find((user) => user.socketId === userId);
 	if (!user?.roomId) {
-		console.error("Room ID is undefined for socket ID:", socketId);
+		console.error("Room ID is undefined for user ID:", userId);
 		throw new Error("Room ID not found");
 	}
 	return user.roomId;
 }
 
-function getUserBySocketId(socketId: SocketId): User | null {
-	const user = userSocketMap.find((user) => user.socketId === socketId)
+function getUserById(userId: string): User | null {
+	const user = userSocketMap.find((user) => user.socketId === userId)
 	if (!user) {
-		console.error("User not found for socket ID:", socketId)
+		console.error("User not found for ID:", userId)
 		return null
 	}
 	return user
 }
 
-io.on("connection", (socket) => {
-	socket.on(SocketEvent.JOIN_REQUEST, async ({ roomId, username }) => {
+// Pusher webhook endpoint for presence channels
+app.post('/api/pusher/auth', (req: Request, res: Response) => {
+	const socketId = req.body.socket_id;
+	const channel = req.body.channel_name;
+	const presenceData = {
+		user_id: socketId,
+		user_info: {
+			// Add any user info you want to share
+			timestamp: new Date().toISOString()
+		}
+	};
+
+	try {
+		const authResponse = pusher.authorizeChannel(socketId, channel, presenceData);
+		res.send(authResponse);
+	} catch (error) {
+		console.error('Pusher auth error:', error);
+		res.status(403).send('Forbidden');
+	}
+});
+
+// Join room endpoint
+app.post('/api/join-room', async (req: Request, res: Response) => {
+	const { roomId, username } = req.body;
+	
+	try {
 		const isUsernameExist = getUsersInRoom(roomId).some(
 			(u) => u.username === username
-		)
+		);
+		
 		if (isUsernameExist) {
-			io.to(socket.id).emit(SocketEvent.USERNAME_EXISTS)
-			return
+			return res.status(400).json({ error: 'Username already exists' });
 		}
 
+		const userId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 		const user: User = {
 			username,
 			roomId,
 			status: USER_CONNECTION_STATUS.ONLINE,
 			cursorPosition: 0,
 			typing: false,
-			socketId: socket.id,
+			socketId: userId,
 			currentFile: null,
-		}
-		userSocketMap.push(user)
-		socket.join(roomId)
-		socket.broadcast.to(roomId).emit(SocketEvent.USER_JOINED, { user })
-		const users = getUsersInRoom(roomId)
-		io.to(socket.id).emit(SocketEvent.JOIN_ACCEPTED, { user, users })
+		};
+
+		userSocketMap.push(user);
+		
+		// Trigger user joined event
+		await pusher.trigger(roomId, SocketEvent.USER_JOINED, { user });
+		
+		// Get all users in room and send join accepted
+		const users = getUsersInRoom(roomId);
+		await pusher.trigger(userId, SocketEvent.JOIN_ACCEPTED, { user, users });
 
 		try {
 			await UserModel.create({
 				...user,
-				email: `${username}@temp.com`, // Temporary email for socket users
-				password: 'socket-user', // Temporary password for socket users
-			})
+				email: `${username}@temp.com`,
+				password: 'socket-user',
+			});
 		} catch (err) {
-			console.error("Error saving user to MongoDB:", err)
+			console.error("Error saving user to MongoDB:", err);
 		}
-	})
 
-	socket.on("disconnecting", () => {
-		const user = getUserBySocketId(socket.id)
-		if (!user) return
-		try {
-			const roomId = getRoomId(socket.id)
-			socket.broadcast.to(roomId).emit(SocketEvent.USER_DISCONNECTED, { user })
-			userSocketMap = userSocketMap.filter((u) => u.socketId !== socket.id)
-			socket.leave(roomId)
-		} catch (error) {
-			console.error("Error in disconnecting handler:", error)
+		res.json({ success: true, userId });
+	} catch (error) {
+		console.error('Join room error:', error);
+		res.status(500).json({ error: 'Failed to join room' });
+	}
+});
+
+// Leave room endpoint
+app.post('/api/leave-room', async (req: Request, res: Response) => {
+	const { userId } = req.body;
+	
+	try {
+		const user = getUserById(userId);
+		if (!user) {
+			return res.status(404).json({ error: 'User not found' });
 		}
-	})
 
-	socket.on(SocketEvent.SYNC_FILE_STRUCTURE, ({ fileStructure, openFiles, activeFile, socketId }) => {
-		io.to(socketId).emit(SocketEvent.SYNC_FILE_STRUCTURE, {
-			fileStructure,
-			openFiles,
-			activeFile,
-		})
-	})
+		const roomId = getRoomId(userId);
+		userSocketMap = userSocketMap.filter((u) => u.socketId !== userId);
+		
+		// Trigger user left event
+		await pusher.trigger(roomId, SocketEvent.USER_DISCONNECTED, { user });
+		
+		res.json({ success: true });
+	} catch (error) {
+		console.error('Leave room error:', error);
+		res.status(500).json({ error: 'Failed to leave room' });
+	}
+});
 
-	socket.on(SocketEvent.DIRECTORY_CREATED, ({ parentDirId, newDirectory }) => {
-		const roomId = getRoomId(socket.id)
-		if (!roomId) return
-		socket.broadcast.to(roomId).emit(SocketEvent.DIRECTORY_CREATED, {
-			parentDirId,
-			newDirectory,
-		})
-	})
-
-	socket.on(SocketEvent.DIRECTORY_UPDATED, ({ dirId, children }) => {
-		const roomId = getRoomId(socket.id)
-		if (!roomId) return
-		socket.broadcast.to(roomId).emit(SocketEvent.DIRECTORY_UPDATED, {
-			dirId,
-			children,
-		})
-	})
-
-	socket.on(SocketEvent.DIRECTORY_RENAMED, ({ dirId, newName }) => {
-		const roomId = getRoomId(socket.id)
-		if (!roomId) return
-		socket.broadcast.to(roomId).emit(SocketEvent.DIRECTORY_RENAMED, {
-			dirId,
-			newName,
-		})
-	})
-
-	socket.on(SocketEvent.DIRECTORY_DELETED, ({ dirId }) => {
-		const roomId = getRoomId(socket.id)
-		if (!roomId) return
-		socket.broadcast.to(roomId).emit(SocketEvent.DIRECTORY_DELETED, { dirId })
-	})
-
-	socket.on(SocketEvent.FILE_CREATED, ({ parentDirId, newFile }) => {
-		const roomId = getRoomId(socket.id)
-		if (!roomId) return
-		socket.broadcast.to(roomId).emit(SocketEvent.FILE_CREATED, {
-			parentDirId,
-			newFile,
-		})
-	})
-
-	socket.on(SocketEvent.FILE_UPDATED, ({ fileId, newContent }) => {
-		const roomId = getRoomId(socket.id)
-		if (!roomId) return
-		socket.broadcast.to(roomId).emit(SocketEvent.FILE_UPDATED, {
-			fileId,
-			newContent,
-		})
-	})
-
-	socket.on(SocketEvent.FILE_RENAMED, ({ fileId, newName }) => {
-		const roomId = getRoomId(socket.id)
-		if (!roomId) return
-		socket.broadcast.to(roomId).emit(SocketEvent.FILE_RENAMED, {
-			fileId,
-			newName,
-		})
-	})
-
-	socket.on(SocketEvent.FILE_DELETED, ({ fileId }) => {
-		const roomId = getRoomId(socket.id)
-		if (!roomId) return
-		socket.broadcast.to(roomId).emit(SocketEvent.FILE_DELETED, { fileId })
-	})
-
-	socket.on(SocketEvent.USER_OFFLINE, ({ socketId }) => {
-		userSocketMap = userSocketMap.map((user) =>
-			user.socketId === socketId
-				? { ...user, status: USER_CONNECTION_STATUS.OFFLINE }
-				: user
-		)
-		const roomId = getRoomId(socketId)
-		if (!roomId) return
-		socket.broadcast.to(roomId).emit(SocketEvent.USER_OFFLINE, { socketId })
-	})
-
-	socket.on(SocketEvent.USER_ONLINE, ({ socketId }) => {
-		userSocketMap = userSocketMap.map((user) =>
-			user.socketId === socketId
-				? { ...user, status: USER_CONNECTION_STATUS.ONLINE }
-				: user
-		)
-		const roomId = getRoomId(socketId)
-		if (!roomId) return
-		socket.broadcast.to(roomId).emit(SocketEvent.USER_ONLINE, { socketId })
-	})
-
-	socket.on(SocketEvent.SEND_MESSAGE, ({ message }) => {
-		const roomId = getRoomId(socket.id)
-		if (!roomId) return
-		socket.broadcast.to(roomId).emit(SocketEvent.RECEIVE_MESSAGE, { message })
-	})
-
-	socket.on(SocketEvent.TYPING_START, ({ cursorPosition }) => {
-		userSocketMap = userSocketMap.map((user) =>
-			user.socketId === socket.id
-				? { ...user, typing: true, cursorPosition }
-				: user
-		)
-		const user = getUserBySocketId(socket.id)
-		if (!user) return
-		try {
-			const roomId = getRoomId(socket.id)
-			socket.broadcast.to(roomId).emit(SocketEvent.TYPING_START, { user })
-		} catch (error) {
-			console.error("Error in typing start handler:", error)
-		}
-	})
-
-	socket.on(SocketEvent.TYPING_PAUSE, () => {
-		userSocketMap = userSocketMap.map((user) =>
-			user.socketId === socket.id ? { ...user, typing: false } : user
-		)
-		const user = getUserBySocketId(socket.id)
-		if (!user) return
-		try {
-			const roomId = getRoomId(socket.id)
-			socket.broadcast.to(roomId).emit(SocketEvent.TYPING_PAUSE, { user })
-		} catch (error) {
-			console.error("Error in typing pause handler:", error)
-		}
-	})
-
-	socket.on(SocketEvent.REQUEST_DRAWING, () => {
-		const roomId = getRoomId(socket.id)
-		if (!roomId) return
-		socket.broadcast.to(roomId).emit(SocketEvent.REQUEST_DRAWING, {
-			socketId: socket.id,
-		})
-	})
-
-	socket.on(SocketEvent.SYNC_DRAWING, ({ drawingData, socketId }) => {
-		socket.broadcast.to(socketId).emit(SocketEvent.SYNC_DRAWING, { drawingData })
-	})
-
-	socket.on(SocketEvent.DRAWING_UPDATE, ({ snapshot }) => {
-		const roomId = getRoomId(socket.id)
-		if (!roomId) return
-		socket.broadcast.to(roomId).emit(SocketEvent.DRAWING_UPDATE, { snapshot })
-	})
-})
+// Add a Pusher health check endpoint
+app.get("/api/pusher-health", (req: Request, res: Response) => {
+	try {
+		res.status(200).json({ 
+			status: "ok", 
+			message: "Pusher is configured",
+			environment: process.env.NODE_ENV,
+			timestamp: new Date().toISOString(),
+			appId: process.env.PUSHER_APP_ID ? 'configured' : 'missing',
+			key: process.env.PUSHER_KEY ? 'configured' : 'missing',
+			cluster: process.env.PUSHER_CLUSTER ? 'configured' : 'missing'
+		});
+	} catch (error) {
+		console.error('Pusher health check failed:', error);
+		res.status(500).json({
+			status: 'error',
+			message: 'Pusher check failed',
+			error: error instanceof Error ? error.message : 'Unknown error'
+		});
+	}
+});
 
 // Middleware to check database connection with retries
 async function checkDbConnection(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -354,45 +257,6 @@ async function checkDbConnection(req: express.Request, res: express.Response, ne
 		});
 	}
 }
-
-// Add a socket.io health check endpoint
-app.get("/api/socket-health", (req: Request, res: Response) => {
-	try {
-		const engine = io.engine as any; // Type assertion for engine properties
-		const transport = engine?.transport?.name || 'unknown';
-		const clientsCount = engine?.clientsCount || 0;
-		
-		res.status(200).json({ 
-			status: "ok", 
-			message: "Socket.IO server is running",
-			environment: process.env.NODE_ENV,
-			timestamp: new Date().toISOString(),
-			transport,
-			clientsCount,
-			polling: transport === 'polling',
-			upgrades: false // Always false since we disabled upgrades
-		});
-	} catch (error) {
-		console.error('Socket health check failed:', error);
-		res.status(500).json({
-			status: 'error',
-			message: 'Socket.IO server check failed',
-			error: error instanceof Error ? error.message : 'Unknown error'
-		});
-	}
-});
-
-// Apply database connection check to all routes except socket health
-app.use('/api', (req, res, next) => {
-	if (req.path === '/socket-health') {
-		next();
-		return;
-	}
-	checkDbConnection(req, res, next);
-});
-
-// Routes
-app.use('/api/users', userRouter);
 
 // Add a test endpoint
 app.get("/api/test", (req: Request, res: Response) => {
@@ -454,11 +318,11 @@ const PORT = process.env.PORT || 5000
 
 // Only start the server if we're not in a serverless environment
 if (process.env.NODE_ENV !== "production") {
-	server.listen(PORT, () => {
+	app.listen(PORT, () => {
 		console.log(`Server is running on port ${PORT}`)
 	})
 }
 
 // Export for serverless
-export { app, server };
+export { app, pusher };
 export default app;
