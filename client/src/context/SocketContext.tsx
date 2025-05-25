@@ -19,211 +19,94 @@ import { toast } from "react-hot-toast"
 import { io, Socket } from "socket.io-client"
 import { useAppContext } from "./AppContext"
 
-const SocketContext = createContext<SocketContextType | null>(null)
-
-export const useSocket = (): SocketContextType => {
-    const context = useContext(SocketContext)
-    if (!context) {
-        throw new Error("useSocket must be used within a SocketProvider")
-    }
-    return context
-}
-
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3000"
 
-const SocketProvider = ({ children }: { children: ReactNode }) => {
-    const {
-        users,
-        setUsers,
-        setStatus,
-        setCurrentUser,
-        drawingData,
-        setDrawingData,
-    } = useAppContext()
-
-    const [socket, setSocket] = useState<Socket | null>(null)
-    const [isConnected, setIsConnected] = useState(false)
-
-    // Initialize Socket.IO with better error handling and production config
-    useEffect(() => {
-        console.log('Initializing Socket.IO with:', {
-            backendUrl: BACKEND_URL,
-            environment: import.meta.env.MODE
-        });
-
-        const socketClient = io(BACKEND_URL, {
-            transports: ['websocket'],
-            reconnectionAttempts: 5,
-            reconnectionDelay: 1000,
-            timeout: 20000,
-            // Production-specific settings
-            path: '/socket.io',
-            secure: true,
-            rejectUnauthorized: true,
-            // Add query parameters for debugging in production
-            query: {
-                clientVersion: '1.0.0',
-                environment: import.meta.env.MODE
-            }
-        });
-
-        socketClient.on('connect', () => {
-            console.log('Socket.IO connected successfully');
-            console.log('Connection details:', {
-                socketId: socketClient.id,
-                connected: socketClient.connected,
-                backendUrl: BACKEND_URL,
-                environment: import.meta.env.MODE
-            });
-            setIsConnected(true);
-            setStatus(USER_STATUS.INITIAL);
-        });
-
-        socketClient.on('connect_error', (err) => {
-            console.error('Socket.IO connection error:', err);
-            console.log('Connection state at error:', {
-                connected: socketClient.connected,
-                socketId: socketClient.id,
-                error: err.message,
-                backendUrl: BACKEND_URL,
-                environment: import.meta.env.MODE
-            });
-            handleError(err);
-        });
-
-        socketClient.on('disconnect', () => {
-            console.log('Socket.IO disconnected');
-            console.log('Connection state at disconnect:', {
-                connected: socketClient.connected,
-                socketId: socketClient.id
-            });
-            setIsConnected(false);
-            setStatus(USER_STATUS.DISCONNECTED);
-        });
-
-        setSocket(socketClient);
-
-        return () => {
-            console.log('Cleaning up Socket.IO connection');
-            socketClient.disconnect();
-        };
-    }, []);
-
-    const handleError = useCallback(
-        (err: any) => {
-            console.error("Connection error:", err);
-            setStatus(USER_STATUS.CONNECTION_FAILED);
-            toast.dismiss();
-            
-            let errorMessage = 'Failed to connect to server';
-            if (err.message) {
-                if (err.message.includes('timeout')) {
-                    errorMessage = 'Connection timed out. Please check your internet connection.';
-                } else {
-                    errorMessage = `Connection error: ${err.message}`;
-                }
-            }
-            
-            toast.error(errorMessage);
-            
-            console.log('Connection details:', {
-                backendUrl: BACKEND_URL,
-                socketId: socket?.id,
-                connected: socket?.connected
-            });
-        },
-        [setStatus, socket],
-    )
-
-    const joinRoom = useCallback(async (roomId: string, username: string) => {
-        if (!socket) {
-            handleError(new Error('Socket not initialized'));
-            return;
-        }
-
-        try {
-            const response = await fetch(`${BACKEND_URL}/api/join-room`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ roomId, username }),
-            });
-
-            if (!response.ok) {
-                const data = await response.json();
-                if (data.error === 'Username already exists') {
-                    toast.error('Username already exists in this room');
-                    setStatus(USER_STATUS.INITIAL);
-                    return;
-                }
-                throw new Error(data.error || 'Failed to join room');
-            }
-
-            const { userId } = await response.json();
-            
-            // Join the room
-            socket.emit(SocketEvent.JOIN_REQUEST, { roomId, username, userId });
-
-            // Listen for room events
-            socket.on(SocketEvent.USER_JOINED, ({ user }: { user: User }) => {
-                setUsers(prev => [...prev, user]);
-                toast.success(`${user.username} joined the room`);
-            });
-
-            socket.on(SocketEvent.USER_DISCONNECTED, ({ user }: { user: User }) => {
-                setUsers(prev => prev.filter(u => u.socketId !== user.socketId));
-                toast.success(`${user.username} left the room`);
-            });
-
-            socket.on(SocketEvent.JOIN_ACCEPTED, ({ user, users }: { user: User; users: RemoteUser[] }) => {
-                setCurrentUser(user);
-                setUsers(users);
-                toast.dismiss();
-                setStatus(USER_STATUS.JOINED);
-
-                if (users.length > 1) {
-                    toast.loading("Syncing data, please wait...");
-                }
-            });
-
-        } catch (error) {
-            handleError(error);
-        }
-    }, [socket, handleError, setUsers, setCurrentUser, setStatus]);
-
-    const leaveRoom = useCallback(async () => {
-        if (!socket) return;
-
-        try {
-            await fetch(`${BACKEND_URL}/api/leave-room`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ userId: socket.id }),
-            });
-
-            socket.off(SocketEvent.USER_JOINED);
-            socket.off(SocketEvent.USER_DISCONNECTED);
-            socket.off(SocketEvent.JOIN_ACCEPTED);
-            setStatus(USER_STATUS.INITIAL);
-        } catch (error) {
-            console.error('Error leaving room:', error);
-        }
-    }, [socket, setStatus]);
-
-    return (
-        <SocketContext.Provider
-            value={{
-                socket: socket!,
-                isConnected
-            }}
-        >
-            {children}
-        </SocketContext.Provider>
-    )
+interface SocketContext {
+	socket: Socket
+	isConnected: boolean
+	emit: (event: string, data: any) => void
+	status: 'connected' | 'disconnected' | 'error'
 }
 
-export { SocketProvider }
+const SocketContext = createContext<SocketContext | null>(null)
+
+export const useSocket = () => {
+	const context = useContext(SocketContext)
+	if (!context) {
+		throw new Error("useSocket must be used within a SocketProvider")
+	}
+	return context
+}
+
+interface SocketProviderProps {
+	children: ReactNode
+}
+
+export const SocketProvider = ({ children }: SocketProviderProps) => {
+	const [socket, setSocket] = useState<Socket | null>(null)
+	const [isConnected, setIsConnected] = useState(false)
+	const [status, setStatus] = useState<'connected' | 'disconnected' | 'error'>('disconnected')
+
+	useEffect(() => {
+		const socketInstance = io(BACKEND_URL, {
+			path: '/socket.io',
+			transports: ['websocket'],
+			reconnectionAttempts: 5,
+			reconnectionDelay: 1000,
+			timeout: 20000,
+		})
+
+		const handleConnect = () => {
+			console.log('Socket connected')
+			setIsConnected(true)
+			setStatus('connected')
+		}
+
+		const handleDisconnect = () => {
+			console.log('Socket disconnected')
+			setIsConnected(false)
+			setStatus('disconnected')
+		}
+
+		const handleError = (error: Error) => {
+			console.error('Socket error:', error)
+			setStatus('error')
+		}
+
+		socketInstance.on('connect', handleConnect)
+		socketInstance.on('disconnect', handleDisconnect)
+		socketInstance.on('error', handleError)
+
+		setSocket(socketInstance)
+
+		return () => {
+			socketInstance.off('connect', handleConnect)
+			socketInstance.off('disconnect', handleDisconnect)
+			socketInstance.off('error', handleError)
+			socketInstance.close()
+		}
+	}, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+	const emit = (event: string, data: unknown) => {
+		if (socket && isConnected) {
+			socket.emit(event, data)
+		} else {
+			console.warn('Socket not connected, cannot emit event:', event)
+		}
+	}
+
+	const value = {
+		socket: socket as Socket,
+		isConnected,
+		emit,
+		status
+	}
+
+	return (
+		<SocketContext.Provider value={value}>
+			{children}
+		</SocketContext.Provider>
+	)
+}
+
 export default SocketContext
