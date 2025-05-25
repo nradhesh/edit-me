@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { ReactNode, createContext, useContext, useEffect, useState, useRef } from "react"
+import React, { ReactNode, createContext, useContext, useEffect, useState, useRef, ErrorInfo } from "react"
 import { io, Socket } from "socket.io-client"
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3000"
@@ -13,10 +13,47 @@ interface SocketContext {
 
 const SocketContext = createContext<SocketContext | null>(null)
 
+// Error boundary component to prevent app crashes
+class SocketErrorBoundary extends React.Component<{ children: ReactNode }, { hasError: boolean }> {
+	constructor(props: { children: ReactNode }) {
+		super(props)
+		this.state = { hasError: false }
+	}
+
+	static getDerivedStateFromError(_: Error) {
+		return { hasError: true }
+	}
+
+	componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+		console.error('Socket Error Boundary caught an error:', error, errorInfo)
+	}
+
+	render() {
+		if (this.state.hasError) {
+			return (
+				<div style={{ padding: '20px', textAlign: 'center' }}>
+					<h2>Connection Error</h2>
+					<p>There was a problem connecting to the server. Please try refreshing the page.</p>
+					<button onClick={() => window.location.reload()}>Refresh Page</button>
+				</div>
+			)
+		}
+
+		return this.props.children
+	}
+}
+
 export const useSocket = () => {
 	const context = useContext(SocketContext)
 	if (!context) {
-		throw new Error("useSocket must be used within a SocketProvider")
+		// Instead of throwing, return a safe default context
+		console.warn('useSocket used outside of SocketProvider, returning safe default')
+		return {
+			socket: null,
+			isConnected: false,
+			emit: () => console.warn('Socket not available'),
+			status: 'disconnected' as const
+		}
 	}
 	return context
 }
@@ -31,26 +68,37 @@ export const SocketProvider = ({ children }: SocketProviderProps) => {
 	const [status, setStatus] = useState<'connected' | 'disconnected' | 'error' | 'connecting'>('disconnected')
 	const socketRef = useRef<Socket | null>(null)
 	const reconnectTimeoutRef = useRef<NodeJS.Timeout>()
+	const isInitializedRef = useRef(false)
 
 	useEffect(() => {
+		// Prevent multiple initializations
+		if (isInitializedRef.current) {
+			return
+		}
+		isInitializedRef.current = true
+
 		console.log('SocketProvider mounted, initializing socket...')
 		
 		const initializeSocket = () => {
-			// Clear any existing socket
-			if (socketRef.current) {
-				console.log('Cleaning up existing socket...')
-				socketRef.current.removeAllListeners()
-				socketRef.current.close()
-				socketRef.current = null
-			}
-
-			// Clear any existing reconnect timeout
-			if (reconnectTimeoutRef.current) {
-				clearTimeout(reconnectTimeoutRef.current)
-				reconnectTimeoutRef.current = undefined
-			}
-
 			try {
+				// Clear any existing socket
+				if (socketRef.current) {
+					console.log('Cleaning up existing socket...')
+					try {
+						socketRef.current.removeAllListeners()
+						socketRef.current.close()
+					} catch (e) {
+						console.warn('Error cleaning up socket:', e)
+					}
+					socketRef.current = null
+				}
+
+				// Clear any existing reconnect timeout
+				if (reconnectTimeoutRef.current) {
+					clearTimeout(reconnectTimeoutRef.current)
+					reconnectTimeoutRef.current = undefined
+				}
+
 				console.log('Creating new socket connection to:', BACKEND_URL)
 				setStatus('connecting')
 
@@ -130,14 +178,19 @@ export const SocketProvider = ({ children }: SocketProviderProps) => {
 		// Cleanup function
 		return () => {
 			console.log('SocketProvider unmounting, cleaning up...')
-			if (reconnectTimeoutRef.current) {
-				clearTimeout(reconnectTimeoutRef.current)
+			try {
+				if (reconnectTimeoutRef.current) {
+					clearTimeout(reconnectTimeoutRef.current)
+				}
+				if (socketRef.current) {
+					socketRef.current.removeAllListeners()
+					socketRef.current.close()
+					socketRef.current = null
+				}
+			} catch (e) {
+				console.warn('Error during socket cleanup:', e)
 			}
-			if (socketRef.current) {
-				socketRef.current.removeAllListeners()
-				socketRef.current.close()
-				socketRef.current = null
-			}
+			isInitializedRef.current = false
 		}
 	}, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -163,9 +216,11 @@ export const SocketProvider = ({ children }: SocketProviderProps) => {
 	}
 
 	return (
-		<SocketContext.Provider value={value}>
-			{children}
-		</SocketContext.Provider>
+		<SocketErrorBoundary>
+			<SocketContext.Provider value={value}>
+				{children}
+			</SocketContext.Provider>
+		</SocketErrorBoundary>
 	)
 }
 
