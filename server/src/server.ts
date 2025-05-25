@@ -6,10 +6,9 @@ import { Server } from "socket.io"
 import path from "path"
 import mongoose from "mongoose"
 import { userRouter } from './routes/userRoutes'
-
 import { SocketEvent, SocketId } from "./types/socket"
-import { USER_CONNECTION_STATUS, User } from "./types/user"
-import UserModel from "./models/User"
+import { USER_CONNECTION_STATUS } from "./types/user"
+import { User } from "./models/User"
 
 dotenv.config()
 
@@ -27,29 +26,6 @@ const io = new Server(server, {
 	pingTimeout: 60000,
 })
 
-// Add type definitions for mongoose cache
-interface MongooseCache {
-	conn: typeof mongoose | null;
-	promise: Promise<typeof mongoose> | null;
-}
-
-declare global {
-	var mongoose: MongooseCache | undefined;
-}
-
-// Initialize mongoose cache
-const mongooseCache: MongooseCache = {
-	conn: null,
-	promise: null
-};
-
-// Cache the mongoose connection
-let cached = global.mongoose || mongooseCache;
-
-if (!global.mongoose) {
-	global.mongoose = cached;
-}
-
 // MongoDB connection state
 let isConnected = false;
 
@@ -65,6 +41,11 @@ async function connectToDatabase() {
 			throw new Error('MONGODB_URI is not defined');
 		}
 
+		// Close any existing connection first
+		if (mongoose.connection.readyState !== 0) {
+			await mongoose.connection.close();
+		}
+
 		await mongoose.connect(mongoUri, {
 			serverSelectionTimeoutMS: 5000, // Timeout after 5s instead of 30s
 			socketTimeoutMS: 45000, // Close sockets after 45s of inactivity
@@ -73,6 +54,10 @@ async function connectToDatabase() {
 			minPoolSize: 5, // Maintain at least 5 socket connections
 			connectTimeoutMS: 10000, // Give up initial connection after 10s
 			heartbeatFrequencyMS: 10000, // Check server status every 10s
+			retryWrites: true,
+			retryReads: true,
+			w: 'majority', // Write concern
+			wtimeoutMS: 2500, // Write timeout
 		});
 
 		isConnected = true;
@@ -296,18 +281,23 @@ io.on("connection", (socket) => {
 async function checkDbConnection(req: express.Request, res: express.Response, next: express.NextFunction) {
 	try {
 		await connectToDatabase();
+		if (mongoose.connection.readyState !== 1) {
+			throw new Error(`Database not ready. Current state: ${mongoose.connection.readyState}`);
+		}
 		next();
 	} catch (error) {
+		console.error('Database connection check failed:', error);
 		res.status(503).json({
 			error: 'Database connection not ready',
 			details: error instanceof Error ? error.message : 'Unknown error',
-			state: mongoose.connection.readyState
+			state: mongoose.connection.readyState,
+			message: 'Please try again in a few moments'
 		});
 	}
 }
 
 // Apply database connection check to all routes
-app.use(checkDbConnection);
+app.use('/api', checkDbConnection);
 
 // Routes
 app.use('/api/users', userRouter);
@@ -323,42 +313,32 @@ app.get("/api/health", (req: Request, res: Response) => {
 		status: "ok", 
 		message: "Server is running",
 		environment: process.env.NODE_ENV,
-		timestamp: new Date().toISOString()
+		timestamp: new Date().toISOString(),
+		dbState: mongoose.connection.readyState
 	});
-});
-
-// API route to retrieve all users stored in MongoDB
-app.get("/api/users", async (req: Request, res: Response) => {
-	try {
-		console.log("Attempting to fetch users from MongoDB...");
-		const users = await UserModel.find({}).maxTimeMS(3000); // Reduce query timeout
-		console.log(`Successfully fetched ${users.length} users`);
-		res.json(users);
-	} catch (err) {
-		console.error("Detailed error fetching users:", err);
-		res.status(500).json({ 
-			error: "Failed to fetch users",
-			details: err instanceof Error ? err.message : "Unknown error",
-			connectionState: mongoose.connection.readyState
-		});
-	}
 });
 
 // Test endpoint to check database connection
 app.get('/api/test-db', async (req, res) => {
 	try {
 		await connectToDatabase();
+		if (mongoose.connection.readyState !== 1) {
+			throw new Error(`Database not ready. Current state: ${mongoose.connection.readyState}`);
+		}
 		res.json({
 			status: 'connected',
 			state: mongoose.connection.readyState,
 			host: mongoose.connection.host,
-			name: mongoose.connection.name
+			name: mongoose.connection.name,
+			isConnected
 		});
 	} catch (error) {
+		console.error('Database connection test failed:', error);
 		res.status(503).json({
 			status: 'error',
 			error: error instanceof Error ? error.message : 'Unknown error',
-			state: mongoose.connection.readyState
+			state: mongoose.connection.readyState,
+			isConnected
 		});
 	}
 });

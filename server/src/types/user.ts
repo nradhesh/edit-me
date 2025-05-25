@@ -1,16 +1,9 @@
-enum USER_CONNECTION_STATUS {
-	OFFLINE = "offline",
+import { IUser } from '../models/User';
+
+export enum USER_CONNECTION_STATUS {
 	ONLINE = "online",
+	OFFLINE = "offline",
+	AWAY = "away",
 }
 
-interface User {
-	username: string
-	roomId: string
-	status: USER_CONNECTION_STATUS
-	cursorPosition: number
-	typing: boolean
-	currentFile: string | null
-	socketId: string
-}
-
-export { USER_CONNECTION_STATUS, User }
+export type User = Pick<IUser, 'username' | 'roomId' | 'status' | 'cursorPosition' | 'typing' | 'currentFile' | 'socketId'>;
