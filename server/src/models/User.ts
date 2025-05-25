@@ -6,30 +6,45 @@ export enum USER_CONNECTION_STATUS {
   AWAY = "away",
 }
 
-interface User {
+export interface IUser {
   username: string
-  roomId: string
-  status: USER_CONNECTION_STATUS
-  cursorPosition: number
-  typing: boolean
-  currentFile: string | null
-  socketId: string
+  email: string
+  password: string
+  roomId?: string
+  status?: USER_CONNECTION_STATUS
+  cursorPosition?: number
+  typing?: boolean
+  currentFile?: string | null
+  socketId?: string
+  createdAt: Date
+  updatedAt: Date
 }
 
-const userSchema = new mongoose.Schema<User>({
-  username: { type: String, required: true },
-  roomId: { type: String, required: true },
+const userSchema = new mongoose.Schema<IUser>({
+  username: { type: String, required: true, unique: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  roomId: { type: String },
   status: {
     type: String,
     enum: Object.values(USER_CONNECTION_STATUS),
-    required: true,
+    default: USER_CONNECTION_STATUS.OFFLINE
   },
-  cursorPosition: { type: Number, required: true },
-  typing: { type: Boolean, required: true },
+  cursorPosition: { type: Number, default: 0 },
+  typing: { type: Boolean, default: false },
   currentFile: { type: String, default: null },
-  socketId: { type: String, required: true },
-}, { timestamps: true })
+  socketId: { type: String }
+}, { 
+  timestamps: true,
+  toJSON: {
+    transform: (doc, ret) => {
+      delete ret.password;
+      return ret;
+    }
+  }
+});
 
-const UserModel = mongoose.model<User>("User", userSchema)
+// Add index for faster queries
+userSchema.index({ username: 1, email: 1 });
 
-export default UserModel
+export const User = mongoose.model<IUser>("User", userSchema)
