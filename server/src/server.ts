@@ -1,5 +1,5 @@
-import express, { Express } from "express"
-import type { Request, Response, NextFunction } from "express-serve-static-core"
+import express from "express"
+import type { Request, Response, NextFunction } from "express"
 import dotenv from "dotenv"
 import cors from "cors"
 import path from "path"
@@ -12,7 +12,7 @@ import { User as UserModel } from "./models/User"
 
 dotenv.config()
 
-const app: Express = express()
+const app = express()
 app.use(express.json())
 app.use(cors())
 app.use(express.static(path.join(__dirname, "public")))
