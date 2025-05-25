@@ -275,7 +275,7 @@ app.get("/api/health", (req: Request, res: Response) => {
 });
 
 // Test endpoint to check database connection
-app.get('/api/test-db', async (req, res) => {
+app.get('/api/test-db', async (req: Request, res: Response) => {
 	try {
 		await connectToDatabase();
 		if (mongoose.connection.readyState !== 1) {
