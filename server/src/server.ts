@@ -257,12 +257,43 @@ app.get("/api/health", (req: Request, res: Response) => {
 // API route to retrieve all users stored in MongoDB
 app.get("/api/users", async (req: Request, res: Response) => {
 	try {
-		const users = await UserModel.find({})
-		res.json(users)
+		console.log("Attempting to fetch users from MongoDB...");
+		const users = await UserModel.find({});
+		console.log(`Successfully fetched ${users.length} users`);
+		res.json(users);
 	} catch (err) {
-		res.status(500).json({ error: "Failed to fetch users" })
+		console.error("Detailed error fetching users:", err);
+		res.status(500).json({ 
+			error: "Failed to fetch users",
+			details: err instanceof Error ? err.message : "Unknown error"
+		});
 	}
-})
+});
+
+// Add a test endpoint to check MongoDB connection
+app.get("/api/test-db", async (req: Request, res: Response) => {
+	try {
+		const dbState = mongoose.connection.readyState;
+		const states: Record<number, string> = {
+			0: "disconnected",
+			1: "connected",
+			2: "connecting",
+			3: "disconnecting"
+		};
+		
+		res.json({
+			status: "ok",
+			dbState: states[dbState] || "unknown",
+			readyState: dbState,
+			message: dbState === 1 ? "MongoDB is connected" : "MongoDB is not connected"
+		});
+	} catch (err) {
+		res.status(500).json({
+			error: "Database connection test failed",
+			details: err instanceof Error ? err.message : "Unknown error"
+		});
+	}
+});
 
 // Serve frontend
 app.get("/", (req: Request, res: Response) => {
