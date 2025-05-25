@@ -19,17 +19,31 @@ dotenv.config()
 
 const app: Application = express()
 const httpServer = createServer(app)
-const io = new Server(httpServer, {
-	cors: {
-		origin: process.env.CLIENT_URL || "http://localhost:5173",
-		methods: ["GET", "POST"],
-		credentials: true
-	}
-})
+
+// Configure CORS with specific options
+const corsOptions = {
+	origin: [
+		process.env.CLIENT_URL || "http://localhost:5173",
+		"https://edit-me-client.vercel.app",
+		"https://edit-me.vercel.app"
+	],
+	methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+	allowedHeaders: ["Content-Type", "Authorization"],
+	credentials: true,
+	maxAge: 86400 // 24 hours
+};
 
 app.use(express.json())
-app.use(cors())
+app.use(cors(corsOptions))
 app.use(express.static(path.join(__dirname, "public")))
+
+const io = new Server(httpServer, {
+	cors: corsOptions,
+	path: '/socket.io',
+	transports: ['websocket'],
+	pingTimeout: 60000,
+	pingInterval: 25000
+})
 
 // MongoDB connection state
 let isConnected = false;

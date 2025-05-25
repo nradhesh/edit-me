@@ -44,24 +44,36 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
     const [socket, setSocket] = useState<Socket | null>(null)
     const [isConnected, setIsConnected] = useState(false)
 
-    // Initialize Socket.IO with better error handling
+    // Initialize Socket.IO with better error handling and production config
     useEffect(() => {
         console.log('Initializing Socket.IO with:', {
-            backendUrl: BACKEND_URL
+            backendUrl: BACKEND_URL,
+            environment: import.meta.env.MODE
         });
 
         const socketClient = io(BACKEND_URL, {
             transports: ['websocket'],
             reconnectionAttempts: 5,
             reconnectionDelay: 1000,
-            timeout: 20000
+            timeout: 20000,
+            // Production-specific settings
+            path: '/socket.io',
+            secure: true,
+            rejectUnauthorized: true,
+            // Add query parameters for debugging in production
+            query: {
+                clientVersion: '1.0.0',
+                environment: import.meta.env.MODE
+            }
         });
 
         socketClient.on('connect', () => {
             console.log('Socket.IO connected successfully');
             console.log('Connection details:', {
                 socketId: socketClient.id,
-                connected: socketClient.connected
+                connected: socketClient.connected,
+                backendUrl: BACKEND_URL,
+                environment: import.meta.env.MODE
             });
             setIsConnected(true);
             setStatus(USER_STATUS.INITIAL);
@@ -72,7 +84,9 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
             console.log('Connection state at error:', {
                 connected: socketClient.connected,
                 socketId: socketClient.id,
-                error: err.message
+                error: err.message,
+                backendUrl: BACKEND_URL,
+                environment: import.meta.env.MODE
             });
             handleError(err);
         });
