@@ -13,11 +13,12 @@
 		"resolveJsonModule": true,
 		"declaration": true,
 		"sourceMap": true,
-		"typeRoots": ["./node_modules/@types", "./src/types"],
+		"typeRoots": ["./node_modules/@types"],
 		"baseUrl": ".",
 		"paths": {
-			"*": ["node_modules/*", "src/types/*"]
-		}
+			"*": ["node_modules/*"]
+		},
+		"allowSyntheticDefaultImports": true
 	},
 	"include": ["src/**/*"],
 	"exclude": ["node_modules", "dist"]
