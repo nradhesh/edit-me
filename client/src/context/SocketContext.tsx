@@ -47,10 +47,12 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
                 reconnectionDelayMax: 5000,
                 timeout: 20000,
                 autoConnect: true,
-                transports: ['polling', 'websocket'],
+                transports: ['polling'],
                 path: '/socket.io/',
                 forceNew: true,
                 withCredentials: true,
+                upgrade: false,
+                rememberUpgrade: false,
                 extraHeaders: {
                     'Access-Control-Allow-Origin': '*'
                 }
@@ -67,9 +69,7 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
             // More detailed error message based on error type
             let errorMessage = 'Failed to connect to server';
             if (err.message) {
-                if (err.message.includes('websocket')) {
-                    errorMessage = 'WebSocket connection failed. Falling back to polling...';
-                } else if (err.message.includes('timeout')) {
+                if (err.message.includes('timeout')) {
                     errorMessage = 'Connection timed out. Please check your internet connection.';
                 } else if (err.message.includes('xhr poll error')) {
                     errorMessage = 'Polling connection failed. Please try again.';
@@ -88,7 +88,9 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
                 disconnected: socket.disconnected,
                 transport: socket.io.engine?.transport?.name,
                 upgrade: socket.io.engine?.upgrade,
-                readyState: socket.io.engine?.readyState
+                readyState: socket.io.engine?.readyState,
+                polling: socket.io.engine?.transport?.name === 'polling',
+                pollingWritable: socket.io.engine?.transport?.writable
             });
         },
         [setStatus, socket],
@@ -139,80 +141,37 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
     )
 
     useEffect(() => {
-        socket.on('connect', () => {
+        const handleConnect = () => {
             console.log('Socket connected successfully');
+            console.log('Transport:', socket.io.engine?.transport?.name);
             toast.dismiss();
             setStatus(USER_STATUS.INITIAL);
-        });
+        };
 
-        socket.on('connect_error', (error) => {
+        const handleConnectError = (error: Error) => {
             console.error('Socket connection error:', error);
             handleError(error);
-        });
+        };
 
-        socket.on('disconnect', (reason) => {
+        const handleDisconnect = (reason: string) => {
             console.log('Socket disconnected:', reason);
             if (reason === 'io server disconnect') {
                 // Server initiated disconnect, try to reconnect
                 socket.connect();
             }
             setStatus(USER_STATUS.DISCONNECTED);
-        });
+        };
 
-        socket.on('reconnect_attempt', (attemptNumber) => {
-            console.log(`Attempting to reconnect (${attemptNumber})...`);
-            toast.loading(`Reconnecting to server (attempt ${attemptNumber})...`);
-        });
-
-        socket.on('reconnect', (attemptNumber) => {
-            console.log(`Reconnected after ${attemptNumber} attempts`);
-            toast.dismiss();
-            toast.success('Reconnected to server');
-            setStatus(USER_STATUS.INITIAL);
-        });
-
-        socket.on('reconnect_error', (error) => {
-            console.error('Reconnection error:', error);
-            handleError(error);
-        });
-
-        socket.on('reconnect_failed', () => {
-            console.error('Failed to reconnect after all attempts');
-            toast.error('Failed to reconnect to server. Please refresh the page.');
-            setStatus(USER_STATUS.CONNECTION_FAILED);
-        });
-
-        socket.on(SocketEvent.USERNAME_EXISTS, handleUsernameExist)
-        socket.on(SocketEvent.JOIN_ACCEPTED, handleJoiningAccept)
-        socket.on(SocketEvent.USER_DISCONNECTED, handleUserLeft)
-        socket.on(SocketEvent.REQUEST_DRAWING, handleRequestDrawing)
-        socket.on(SocketEvent.SYNC_DRAWING, handleDrawingSync)
+        socket.on('connect', handleConnect);
+        socket.on('connect_error', handleConnectError);
+        socket.on('disconnect', handleDisconnect);
 
         return () => {
-            socket.off('connect');
-            socket.off('connect_error');
-            socket.off('disconnect');
-            socket.off('reconnect_attempt');
-            socket.off('reconnect');
-            socket.off('reconnect_error');
-            socket.off('reconnect_failed');
-            socket.off(SocketEvent.USERNAME_EXISTS);
-            socket.off(SocketEvent.JOIN_ACCEPTED);
-            socket.off(SocketEvent.USER_DISCONNECTED);
-            socket.off(SocketEvent.REQUEST_DRAWING);
-            socket.off(SocketEvent.SYNC_DRAWING);
-        }
-    }, [
-        handleDrawingSync,
-        handleError,
-        handleJoiningAccept,
-        handleRequestDrawing,
-        handleUserLeft,
-        handleUsernameExist,
-        setUsers,
-        socket,
-        setStatus,
-    ])
+            socket.off('connect', handleConnect);
+            socket.off('connect_error', handleConnectError);
+            socket.off('disconnect', handleDisconnect);
+        };
+    }, [socket, handleError, setStatus]);
 
     return (
         <SocketContext.Provider

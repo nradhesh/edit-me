@@ -26,12 +26,12 @@ const io = new Server(server, {
 	},
 	maxHttpBufferSize: 1e8,
 	pingTimeout: 60000,
-	transports: ['polling', 'websocket'],
+	transports: ['polling'],
 	allowEIO3: true,
 	path: '/socket.io/',
 	connectTimeout: 45000,
 	upgradeTimeout: 30000,
-	allowUpgrades: true,
+	allowUpgrades: false,
 	perMessageDeflate: false,
 	httpCompression: {
 		threshold: 2048
@@ -355,18 +355,22 @@ async function checkDbConnection(req: express.Request, res: express.Response, ne
 	}
 }
 
-// Move socket health check before database middleware
+// Add a socket.io health check endpoint
 app.get("/api/socket-health", (req: Request, res: Response) => {
 	try {
 		const engine = io.engine as any; // Type assertion for engine properties
+		const transport = engine?.transport?.name || 'unknown';
+		const clientsCount = engine?.clientsCount || 0;
+		
 		res.status(200).json({ 
 			status: "ok", 
 			message: "Socket.IO server is running",
 			environment: process.env.NODE_ENV,
 			timestamp: new Date().toISOString(),
-			transports: engine?.transports || [],
-			upgrades: engine?.upgrades || false,
-			clientsCount: engine?.clientsCount || 0
+			transport,
+			clientsCount,
+			polling: transport === 'polling',
+			upgrades: false // Always false since we disabled upgrades
 		});
 	} catch (error) {
 		console.error('Socket health check failed:', error);
