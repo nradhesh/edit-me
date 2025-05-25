@@ -302,7 +302,7 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 	});
 });
 
-const PORT = process.env.PORT || 5000
+const PORT = parseInt(process.env.PORT || '5000', 10)
 
 // Only start the server if we're not in a serverless environment
 if (process.env.NODE_ENV !== "production") {
@@ -311,9 +311,9 @@ if (process.env.NODE_ENV !== "production") {
 	})
 } else {
 	// In production (Render), always start the server
-	httpServer.listen(PORT, '0.0.0.0', () => {
+	httpServer.listen(PORT, () => {
 		console.log(`Server is running in production mode on port ${PORT}`)
-		console.log('Server bound to all network interfaces (0.0.0.0)')
+		console.log('Server bound to all network interfaces')
 	})
 }
 
