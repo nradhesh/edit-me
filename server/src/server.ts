@@ -64,18 +64,20 @@ async function connectToDatabase(retryCount = 0): Promise<void> {
 
 		console.log(`Attempting to connect to MongoDB (attempt ${retryCount + 1}/${MAX_RETRIES})...`);
 		
+		// Add more connection options for better reliability
 		await mongoose.connect(mongoUri, {
-			serverSelectionTimeoutMS: 5000,
+			serverSelectionTimeoutMS: 10000, // Increased from 5000
 			socketTimeoutMS: 45000,
 			family: 4,
 			maxPoolSize: 10,
 			minPoolSize: 5,
-			connectTimeoutMS: 10000,
+			connectTimeoutMS: 20000, // Increased from 10000
 			heartbeatFrequencyMS: 10000,
 			retryWrites: true,
 			retryReads: true,
 			w: 'majority',
 			wtimeoutMS: 2500,
+			autoIndex: true
 		});
 
 		// Verify connection is actually established
@@ -91,8 +93,9 @@ async function connectToDatabase(retryCount = 0): Promise<void> {
 		isConnected = false;
 
 		if (retryCount < MAX_RETRIES - 1) {
-			console.log(`Retrying connection in ${RETRY_DELAY}ms...`);
-			await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+			const delay = RETRY_DELAY * Math.pow(2, retryCount); // Exponential backoff
+			console.log(`Retrying connection in ${delay}ms...`);
+			await new Promise(resolve => setTimeout(resolve, delay));
 			return connectToDatabase(retryCount + 1);
 		}
 
@@ -106,11 +109,11 @@ function getUsersInRoom(roomId: string): Array<User> {
 	return userSocketMap.filter((user) => user.roomId === roomId)
 }
 
-function getRoomId(socketId: SocketId): string | null {
+function getRoomId(socketId: SocketId): string {
 	const user = userSocketMap.find((user) => user.socketId === socketId);
 	if (!user?.roomId) {
 		console.error("Room ID is undefined for socket ID:", socketId);
-		return null;
+		throw new Error("Room ID not found");
 	}
 	return user.roomId;
 }
@@ -163,10 +166,14 @@ io.on("connection", (socket) => {
 	socket.on("disconnecting", () => {
 		const user = getUserBySocketId(socket.id)
 		if (!user) return
-		const roomId = user.roomId
-		socket.broadcast.to(roomId).emit(SocketEvent.USER_DISCONNECTED, { user })
-		userSocketMap = userSocketMap.filter((u) => u.socketId !== socket.id)
-		socket.leave(roomId)
+		try {
+			const roomId = getRoomId(socket.id)
+			socket.broadcast.to(roomId).emit(SocketEvent.USER_DISCONNECTED, { user })
+			userSocketMap = userSocketMap.filter((u) => u.socketId !== socket.id)
+			socket.leave(roomId)
+		} catch (error) {
+			console.error("Error in disconnecting handler:", error)
+		}
 	})
 
 	socket.on(SocketEvent.SYNC_FILE_STRUCTURE, ({ fileStructure, openFiles, activeFile, socketId }) => {
@@ -279,8 +286,12 @@ io.on("connection", (socket) => {
 		)
 		const user = getUserBySocketId(socket.id)
 		if (!user) return
-		const roomId = user.roomId
-		socket.broadcast.to(roomId).emit(SocketEvent.TYPING_START, { user })
+		try {
+			const roomId = getRoomId(socket.id)
+			socket.broadcast.to(roomId).emit(SocketEvent.TYPING_START, { user })
+		} catch (error) {
+			console.error("Error in typing start handler:", error)
+		}
 	})
 
 	socket.on(SocketEvent.TYPING_PAUSE, () => {
@@ -289,8 +300,12 @@ io.on("connection", (socket) => {
 		)
 		const user = getUserBySocketId(socket.id)
 		if (!user) return
-		const roomId = user.roomId
-		socket.broadcast.to(roomId).emit(SocketEvent.TYPING_PAUSE, { user })
+		try {
+			const roomId = getRoomId(socket.id)
+			socket.broadcast.to(roomId).emit(SocketEvent.TYPING_PAUSE, { user })
+		} catch (error) {
+			console.error("Error in typing pause handler:", error)
+		}
 	})
 
 	socket.on(SocketEvent.REQUEST_DRAWING, () => {
@@ -340,8 +355,37 @@ async function checkDbConnection(req: express.Request, res: express.Response, ne
 	}
 }
 
-// Apply database connection check to all routes
-app.use('/api', checkDbConnection);
+// Move socket health check before database middleware
+app.get("/api/socket-health", (req: Request, res: Response) => {
+	try {
+		const engine = io.engine as any; // Type assertion for engine properties
+		res.status(200).json({ 
+			status: "ok", 
+			message: "Socket.IO server is running",
+			environment: process.env.NODE_ENV,
+			timestamp: new Date().toISOString(),
+			transports: engine?.transports || [],
+			upgrades: engine?.upgrades || false,
+			clientsCount: engine?.clientsCount || 0
+		});
+	} catch (error) {
+		console.error('Socket health check failed:', error);
+		res.status(500).json({
+			status: 'error',
+			message: 'Socket.IO server check failed',
+			error: error instanceof Error ? error.message : 'Unknown error'
+		});
+	}
+});
+
+// Apply database connection check to all routes except socket health
+app.use('/api', (req, res, next) => {
+	if (req.path === '/socket-health') {
+		next();
+		return;
+	}
+	checkDbConnection(req, res, next);
+});
 
 // Routes
 app.use('/api/users', userRouter);
@@ -385,19 +429,6 @@ app.get('/api/test-db', async (req, res) => {
 			isConnected
 		});
 	}
-});
-
-// Add a socket.io health check endpoint
-app.get("/api/socket-health", (req: Request, res: Response) => {
-	res.status(200).json({ 
-		status: "ok", 
-		message: "Socket.IO server is running",
-		environment: process.env.NODE_ENV,
-		timestamp: new Date().toISOString(),
-		transports: io.engine.transports,
-		upgrades: io.engine.upgrades,
-		clientsCount: io.engine.clientsCount
-	});
 });
 
 // Serve frontend
