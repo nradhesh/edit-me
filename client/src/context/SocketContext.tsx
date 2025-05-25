@@ -5,10 +5,10 @@ import { io, Socket } from "socket.io-client"
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3000"
 
 interface SocketContext {
-	socket: Socket
+	socket: Socket | null
 	isConnected: boolean
 	emit: (event: string, data: unknown) => void
-	status: 'connected' | 'disconnected' | 'error'
+	status: 'connected' | 'disconnected' | 'error' | 'connecting'
 }
 
 const SocketContext = createContext<SocketContext | null>(null)
@@ -28,58 +28,100 @@ interface SocketProviderProps {
 export const SocketProvider = ({ children }: SocketProviderProps) => {
 	const [socket, setSocket] = useState<Socket | null>(null)
 	const [isConnected, setIsConnected] = useState(false)
-	const [status, setStatus] = useState<'connected' | 'disconnected' | 'error'>('disconnected')
+	const [status, setStatus] = useState<'connected' | 'disconnected' | 'error' | 'connecting'>('disconnected')
 
 	useEffect(() => {
-		const socketInstance = io(BACKEND_URL, {
-			path: '/socket.io',
-			transports: ['websocket'],
-			reconnectionAttempts: 5,
-			reconnectionDelay: 1000,
-			timeout: 20000,
-		})
+		let socketInstance: Socket | null = null
+		let reconnectTimeout: NodeJS.Timeout
 
-		const handleConnect = () => {
-			console.log('Socket connected')
-			setIsConnected(true)
-			setStatus('connected')
+		const initializeSocket = () => {
+			try {
+				setStatus('connecting')
+				socketInstance = io(BACKEND_URL, {
+					path: '/socket.io',
+					transports: ['websocket'],
+					reconnectionAttempts: 5,
+					reconnectionDelay: 1000,
+					timeout: 20000,
+					forceNew: true,
+					autoConnect: true
+				})
+
+				const handleConnect = () => {
+					console.log('Socket connected')
+					setIsConnected(true)
+					setStatus('connected')
+				}
+
+				const handleDisconnect = (reason: string) => {
+					console.log('Socket disconnected:', reason)
+					setIsConnected(false)
+					setStatus('disconnected')
+					
+					// Attempt to reconnect after a delay if not explicitly disconnected
+					if (reason !== 'io client disconnect') {
+						reconnectTimeout = setTimeout(() => {
+							console.log('Attempting to reconnect...')
+							initializeSocket()
+						}, 5000)
+					}
+				}
+
+				const handleError = (error: Error) => {
+					console.error('Socket error:', error)
+					setStatus('error')
+					setIsConnected(false)
+				}
+
+				const handleConnectError = (error: Error) => {
+					console.error('Socket connection error:', error)
+					setStatus('error')
+					setIsConnected(false)
+				}
+
+				socketInstance.on('connect', handleConnect)
+				socketInstance.on('disconnect', handleDisconnect)
+				socketInstance.on('error', handleError)
+				socketInstance.on('connect_error', handleConnectError)
+
+				setSocket(socketInstance)
+			} catch (error) {
+				console.error('Failed to initialize socket:', error)
+				setStatus('error')
+				setIsConnected(false)
+			}
 		}
 
-		const handleDisconnect = () => {
-			console.log('Socket disconnected')
-			setIsConnected(false)
-			setStatus('disconnected')
-		}
-
-		const handleError = (error: Error) => {
-			console.error('Socket error:', error)
-			setStatus('error')
-		}
-
-		socketInstance.on('connect', handleConnect)
-		socketInstance.on('disconnect', handleDisconnect)
-		socketInstance.on('error', handleError)
-
-		setSocket(socketInstance)
+		initializeSocket()
 
 		return () => {
-			socketInstance.off('connect', handleConnect)
-			socketInstance.off('disconnect', handleDisconnect)
-			socketInstance.off('error', handleError)
-			socketInstance.close()
+			if (reconnectTimeout) {
+				clearTimeout(reconnectTimeout)
+			}
+			if (socketInstance) {
+				socketInstance.off('connect')
+				socketInstance.off('disconnect')
+				socketInstance.off('error')
+				socketInstance.off('connect_error')
+				socketInstance.close()
+			}
 		}
 	}, []) // eslint-disable-line react-hooks/exhaustive-deps
 
 	const emit = (event: string, data: unknown) => {
 		if (socket && isConnected) {
-			socket.emit(event, data)
+			try {
+				socket.emit(event, data)
+			} catch (error) {
+				console.error('Error emitting event:', error)
+			}
 		} else {
 			console.warn('Socket not connected, cannot emit event:', event)
 		}
 	}
 
 	const value = {
-		socket: socket as Socket,
+		socket,
 		isConnected,
 		emit,
 		status
