@@ -5,6 +5,7 @@ import cors from "cors"
 import { Server } from "socket.io"
 import path from "path"
 import mongoose from "mongoose"
+import { userRouter } from './routes/userRoutes'
 
 import { SocketEvent, SocketId } from "./types/socket"
 import { USER_CONNECTION_STATUS, User } from "./types/user"
@@ -26,41 +27,62 @@ const io = new Server(server, {
 	pingTimeout: 60000,
 })
 
-// MongoDB connection options
-const mongooseOptions = {
-	serverSelectionTimeoutMS: 5000, // Timeout after 5s instead of 30s
-	socketTimeoutMS: 45000, // Close sockets after 45s of inactivity
-	connectTimeoutMS: 10000, // Give up initial connection after 10s
-	maxPoolSize: 10, // Maintain up to 10 socket connections
-	minPoolSize: 5, // Maintain at least 5 socket connections
-	retryWrites: true,
-	retryReads: true
+// Add type definitions for mongoose cache
+interface MongooseCache {
+	conn: typeof mongoose | null;
+	promise: Promise<typeof mongoose> | null;
+}
+
+declare global {
+	var mongoose: MongooseCache | undefined;
+}
+
+// Initialize mongoose cache
+const mongooseCache: MongooseCache = {
+	conn: null,
+	promise: null
 };
 
-mongoose
-	.connect(process.env.MONGODB_URI as string, mongooseOptions)
-	.then(() => {
-		console.log("MongoDB connected successfully");
-		console.log("Connection state:", mongoose.connection.readyState);
-	})
-	.catch((err) => {
-		console.error("MongoDB connection error:", err);
-		console.error("Connection string (without password):", 
-			(process.env.MONGODB_URI as string).replace(/\/\/[^:]+:[^@]+@/, '//****:****@'));
-	});
+// Cache the mongoose connection
+let cached = global.mongoose || mongooseCache;
 
-// Add connection event handlers
-mongoose.connection.on('connected', () => {
-	console.log('Mongoose connected to MongoDB');
-});
+if (!global.mongoose) {
+	global.mongoose = cached;
+}
 
-mongoose.connection.on('error', (err) => {
-	console.error('Mongoose connection error:', err);
-});
+// MongoDB connection state
+let isConnected = false;
 
-mongoose.connection.on('disconnected', () => {
-	console.log('Mongoose disconnected from MongoDB');
-});
+// Connect to MongoDB with serverless-friendly settings
+async function connectToDatabase() {
+	if (isConnected) {
+		return;
+	}
+
+	try {
+		const mongoUri = process.env.MONGODB_URI;
+		if (!mongoUri) {
+			throw new Error('MONGODB_URI is not defined');
+		}
+
+		await mongoose.connect(mongoUri, {
+			serverSelectionTimeoutMS: 5000, // Timeout after 5s instead of 30s
+			socketTimeoutMS: 45000, // Close sockets after 45s of inactivity
+			family: 4, // Use IPv4, skip trying IPv6
+			maxPoolSize: 10, // Maintain up to 10 socket connections
+			minPoolSize: 5, // Maintain at least 5 socket connections
+			connectTimeoutMS: 10000, // Give up initial connection after 10s
+			heartbeatFrequencyMS: 10000, // Check server status every 10s
+		});
+
+		isConnected = true;
+		console.log('MongoDB connected successfully');
+	} catch (error) {
+		console.error('MongoDB connection error:', error);
+		isConnected = false;
+		throw error;
+	}
+}
 
 let userSocketMap: User[] = []
 
@@ -270,20 +292,25 @@ io.on("connection", (socket) => {
 	})
 })
 
-// Database connection check middleware
-const checkDbConnection = (req: Request, res: Response, next: Function) => {
-	if (mongoose.connection.readyState !== 1) {
-		return res.status(503).json({
-			error: "Database connection not ready",
-			state: mongoose.connection.readyState,
-			message: "Please try again in a few moments"
+// Middleware to check database connection
+async function checkDbConnection(req: express.Request, res: express.Response, next: express.NextFunction) {
+	try {
+		await connectToDatabase();
+		next();
+	} catch (error) {
+		res.status(503).json({
+			error: 'Database connection not ready',
+			details: error instanceof Error ? error.message : 'Unknown error',
+			state: mongoose.connection.readyState
 		});
 	}
-	next();
-};
+}
 
-// Apply middleware to all API routes
-app.use("/api", checkDbConnection);
+// Apply database connection check to all routes
+app.use(checkDbConnection);
+
+// Routes
+app.use('/api/users', userRouter);
 
 // Add a test endpoint
 app.get("/api/test", (req: Request, res: Response) => {
@@ -304,7 +331,7 @@ app.get("/api/health", (req: Request, res: Response) => {
 app.get("/api/users", async (req: Request, res: Response) => {
 	try {
 		console.log("Attempting to fetch users from MongoDB...");
-		const users = await UserModel.find({}).maxTimeMS(5000); // Add timeout to the query
+		const users = await UserModel.find({}).maxTimeMS(3000); // Reduce query timeout
 		console.log(`Successfully fetched ${users.length} users`);
 		res.json(users);
 	} catch (err) {
@@ -317,27 +344,21 @@ app.get("/api/users", async (req: Request, res: Response) => {
 	}
 });
 
-// Add a test endpoint to check MongoDB connection
-app.get("/api/test-db", async (req: Request, res: Response) => {
+// Test endpoint to check database connection
+app.get('/api/test-db', async (req, res) => {
 	try {
-		const dbState = mongoose.connection.readyState;
-		const states: Record<number, string> = {
-			0: "disconnected",
-			1: "connected",
-			2: "connecting",
-			3: "disconnecting"
-		};
-		
+		await connectToDatabase();
 		res.json({
-			status: "ok",
-			dbState: states[dbState] || "unknown",
-			readyState: dbState,
-			message: dbState === 1 ? "MongoDB is connected" : "MongoDB is not connected"
+			status: 'connected',
+			state: mongoose.connection.readyState,
+			host: mongoose.connection.host,
+			name: mongoose.connection.name
 		});
-	} catch (err) {
-		res.status(500).json({
-			error: "Database connection test failed",
-			details: err instanceof Error ? err.message : "Unknown error"
+	} catch (error) {
+		res.status(503).json({
+			status: 'error',
+			error: error instanceof Error ? error.message : 'Unknown error',
+			state: mongoose.connection.readyState
 		});
 	}
 });
@@ -347,17 +368,22 @@ app.get("/", (req: Request, res: Response) => {
 	res.sendFile(path.join(__dirname, "..", "public", "index.html"))
 })
 
-// Handle 404s
-app.use((req: Request, res: Response) => {
-	res.status(404).json({ error: "Not Found" });
+// Error handling middleware
+app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
+	console.error(err.stack);
+	res.status(500).json({
+		error: 'Internal Server Error',
+		message: err.message,
+		state: mongoose.connection.readyState
+	});
 });
 
-const PORT = process.env.PORT || 3000
+const PORT = process.env.PORT || 5000
 
 // Only start the server if we're not in a serverless environment
 if (process.env.NODE_ENV !== "production") {
 	server.listen(PORT, () => {
-		console.log(`Listening on port ${PORT}`)
+		console.log(`Server is running on port ${PORT}`)
 	})
 }
 
