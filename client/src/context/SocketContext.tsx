@@ -46,7 +46,6 @@ class SocketErrorBoundary extends React.Component<{ children: ReactNode }, { has
 export const useSocket = () => {
 	const context = useContext(SocketContext)
 	if (!context) {
-		// Instead of throwing, return a safe default context
 		console.warn('useSocket used outside of SocketProvider, returning safe default')
 		return {
 			socket: null,
@@ -69,115 +68,126 @@ export const SocketProvider = ({ children }: SocketProviderProps) => {
 	const socketRef = useRef<Socket | null>(null)
 	const reconnectTimeoutRef = useRef<NodeJS.Timeout>()
 	const isInitializedRef = useRef(false)
+	const isMountedRef = useRef(true)
 
-	useEffect(() => {
-		// Prevent multiple initializations
-		if (isInitializedRef.current) {
-			return
-		}
-		isInitializedRef.current = true
+	// Initialize socket
+	const initializeSocket = () => {
+		if (!isMountedRef.current) return
 
-		console.log('SocketProvider mounted, initializing socket...')
-		
-		const initializeSocket = () => {
-			try {
-				// Clear any existing socket
-				if (socketRef.current) {
-					console.log('Cleaning up existing socket...')
-					try {
-						socketRef.current.removeAllListeners()
-						socketRef.current.close()
-					} catch (e) {
-						console.warn('Error cleaning up socket:', e)
-					}
-					socketRef.current = null
+		try {
+			// Clean up existing socket
+			if (socketRef.current) {
+				try {
+					socketRef.current.removeAllListeners()
+					socketRef.current.close()
+				} catch (e) {
+					console.warn('Error cleaning up socket:', e)
 				}
+				socketRef.current = null
+			}
 
-				// Clear any existing reconnect timeout
-				if (reconnectTimeoutRef.current) {
-					clearTimeout(reconnectTimeoutRef.current)
-					reconnectTimeoutRef.current = undefined
-				}
+			// Clear any existing reconnect timeout
+			if (reconnectTimeoutRef.current) {
+				clearTimeout(reconnectTimeoutRef.current)
+				reconnectTimeoutRef.current = undefined
+			}
 
-				console.log('Creating new socket connection to:', BACKEND_URL)
-				setStatus('connecting')
+			console.log('Creating new socket connection to:', BACKEND_URL)
+			setStatus('connecting')
 
-				const newSocket = io(BACKEND_URL, {
-					path: '/socket.io',
-					transports: ['websocket'],
-					reconnectionAttempts: 5,
-					reconnectionDelay: 1000,
-					timeout: 20000,
-					forceNew: true,
-					autoConnect: true,
-					withCredentials: true
-				})
+			// Create new socket instance
+			const newSocket = io(BACKEND_URL, {
+				path: '/socket.io',
+				transports: ['websocket'],
+				reconnectionAttempts: 5,
+				reconnectionDelay: 1000,
+				timeout: 20000,
+				forceNew: true,
+				autoConnect: false, // Don't connect automatically
+				withCredentials: true
+			})
 
-				// Store socket in ref for cleanup
-				socketRef.current = newSocket
+			// Set up event handlers before connecting
+			const handleConnect = () => {
+				if (!isMountedRef.current) return
+				console.log('Socket connected successfully')
+				setIsConnected(true)
+				setStatus('connected')
+				setSocket(newSocket)
+			}
 
-				const handleConnect = () => {
-					console.log('Socket connected successfully')
-					setIsConnected(true)
-					setStatus('connected')
-					setSocket(newSocket)
-				}
+			const handleDisconnect = (reason: string) => {
+				if (!isMountedRef.current) return
+				console.log('Socket disconnected. Reason:', reason)
+				setIsConnected(false)
+				setStatus('disconnected')
+				setSocket(null)
 
-				const handleDisconnect = (reason: string) => {
-					console.log('Socket disconnected. Reason:', reason)
-					setIsConnected(false)
-					setStatus('disconnected')
-					setSocket(null)
-
-					// Only attempt reconnect if not explicitly disconnected
-					if (reason !== 'io client disconnect' && reason !== 'io server disconnect') {
-						console.log('Scheduling reconnect attempt...')
-						reconnectTimeoutRef.current = setTimeout(() => {
+				if (reason !== 'io client disconnect' && reason !== 'io server disconnect') {
+					console.log('Scheduling reconnect attempt...')
+					reconnectTimeoutRef.current = setTimeout(() => {
+						if (isMountedRef.current) {
 							console.log('Attempting to reconnect...')
 							initializeSocket()
-						}, 5000)
-					}
+						}
+					}, 5000)
 				}
+			}
 
-				const handleError = (error: Error) => {
-					console.error('Socket error:', error)
-					setStatus('error')
-					setIsConnected(false)
-					setSocket(null)
-				}
+			const handleError = (error: Error) => {
+				if (!isMountedRef.current) return
+				console.error('Socket error:', error)
+				setStatus('error')
+				setIsConnected(false)
+				setSocket(null)
+			}
 
-				const handleConnectError = (error: Error) => {
-					console.error('Socket connection error:', error)
-					setStatus('error')
-					setIsConnected(false)
-					setSocket(null)
-				}
+			const handleConnectError = (error: Error) => {
+				if (!isMountedRef.current) return
+				console.error('Socket connection error:', error)
+				setStatus('error')
+				setIsConnected(false)
+				setSocket(null)
+			}
 
-				// Add event listeners
-				newSocket.on('connect', handleConnect)
-				newSocket.on('disconnect', handleDisconnect)
-				newSocket.on('error', handleError)
-				newSocket.on('connect_error', handleConnectError)
+			// Add event listeners
+			newSocket.on('connect', handleConnect)
+			newSocket.on('disconnect', handleDisconnect)
+			newSocket.on('error', handleError)
+			newSocket.on('connect_error', handleConnectError)
 
-				// Set initial socket state
-				setSocket(newSocket)
-				setIsConnected(newSocket.connected)
-				setStatus(newSocket.connected ? 'connected' : 'connecting')
+			// Store socket reference
+			socketRef.current = newSocket
+			setSocket(newSocket)
 
-			} catch (error) {
-				console.error('Failed to initialize socket:', error)
+			// Connect after setting up all handlers
+			newSocket.connect()
+
+		} catch (error) {
+			console.error('Failed to initialize socket:', error)
+			if (isMountedRef.current) {
 				setStatus('error')
 				setIsConnected(false)
 				setSocket(null)
 			}
 		}
+	}
 
-		// Initial connection
-		initializeSocket()
+	useEffect(() => {
+		isMountedRef.current = true
+		isInitializedRef.current = false
 
-		// Cleanup function
+		if (!isInitializedRef.current) {
+			isInitializedRef.current = true
+			console.log('SocketProvider mounted, initializing socket...')
+			initializeSocket()
+		}
+
 		return () => {
 			console.log('SocketProvider unmounting, cleaning up...')
+			isMountedRef.current = false
+			isInitializedRef.current = false
+
 			try {
 				if (reconnectTimeoutRef.current) {
 					clearTimeout(reconnectTimeoutRef.current)
@@ -190,7 +200,6 @@ export const SocketProvider = ({ children }: SocketProviderProps) => {
 			} catch (e) {
 				console.warn('Error during socket cleanup:', e)
 			}
-			isInitializedRef.current = false
 		}
 	}, []) // eslint-disable-line react-hooks/exhaustive-deps
 
