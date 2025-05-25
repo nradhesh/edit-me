@@ -1,4 +1,7 @@
 console.log("=== Edit Me backend server starting up! ===");
+console.log("Environment:", process.env.NODE_ENV);
+console.log("Node version:", process.version);
+console.log("Port:", process.env.PORT);
 import express, { Application } from "express"
 import type { Request, Response, NextFunction } from "express"
 import dotenv from "dotenv"
@@ -219,14 +222,25 @@ io.on('connection', (socket) => {
 
 // Add a health check endpoint
 app.get("/api/health", (req: Request, res: Response) => {
-	res.status(200).json({ 
-		status: "ok", 
+	const healthData = {
+		status: "ok",
 		message: "Server is running",
 		environment: process.env.NODE_ENV,
 		timestamp: new Date().toISOString(),
+		nodeVersion: process.version,
+		uptime: process.uptime(),
+		memory: process.memoryUsage(),
 		dbState: mongoose.connection.readyState,
-		connectedClients: io.engine.clientsCount
-	});
+		connectedClients: io.engine.clientsCount,
+		activeRooms: Array.from(io.sockets.adapter.rooms.keys()).length
+	};
+	
+	// Log health check in production
+	if (process.env.NODE_ENV === 'production') {
+		console.log('Health check:', healthData);
+	}
+	
+	res.status(200).json(healthData);
 });
 
 // Add a test endpoint
@@ -286,3 +300,22 @@ if (process.env.NODE_ENV !== "production") {
 // Export for serverless
 export { app, io };
 export default app;
+
+// Add production-specific error handling
+process.on('uncaughtException', (error) => {
+	console.error('Uncaught Exception:', error);
+	// In production, we might want to gracefully shutdown
+	if (process.env.NODE_ENV === 'production') {
+		console.error('Shutting down due to uncaught exception');
+		process.exit(1);
+	}
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+	console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+	// In production, we might want to gracefully shutdown
+	if (process.env.NODE_ENV === 'production') {
+		console.error('Shutting down due to unhandled rejection');
+		process.exit(1);
+	}
+});
