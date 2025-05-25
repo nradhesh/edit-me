@@ -239,6 +239,21 @@ io.on("connection", (socket) => {
 	})
 })
 
+// Add a test endpoint
+app.get("/api/test", (req: Request, res: Response) => {
+	res.json({ message: "API is working!" });
+});
+
+// Add a health check endpoint
+app.get("/api/health", (req: Request, res: Response) => {
+	res.status(200).json({ 
+		status: "ok", 
+		message: "Server is running",
+		environment: process.env.NODE_ENV,
+		timestamp: new Date().toISOString()
+	});
+});
+
 // API route to retrieve all users stored in MongoDB
 app.get("/api/users", async (req: Request, res: Response) => {
 	try {
@@ -254,7 +269,20 @@ app.get("/", (req: Request, res: Response) => {
 	res.sendFile(path.join(__dirname, "..", "public", "index.html"))
 })
 
+// Handle 404s
+app.use((req: Request, res: Response) => {
+	res.status(404).json({ error: "Not Found" });
+});
+
 const PORT = process.env.PORT || 3000
-server.listen(PORT, () => {
-	console.log(`Listening on port ${PORT}`)
-})
+
+// Only start the server if we're not in a serverless environment
+if (process.env.NODE_ENV !== "production") {
+	server.listen(PORT, () => {
+		console.log(`Listening on port ${PORT}`)
+	})
+}
+
+// Export for serverless
+export { app, server };
+export default app;
