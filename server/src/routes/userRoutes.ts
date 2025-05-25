@@ -1,8 +1,11 @@
-import express from 'express';
+import express, { Router } from "express"
+import type { Request, Response } from "express-serve-static-core"
 import mongoose from 'mongoose';
 import { User } from '../models/User';
+import bcrypt from "bcryptjs"
+import jwt from "jsonwebtoken"
 
-const router = express.Router();
+const router: Router = express.Router();
 
 // Get all users with timeout and error handling
 router.get('/', async (req: express.Request, res: express.Response) => {

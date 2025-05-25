@@ -1,4 +1,5 @@
-import express, { Request, Response } from "express"
+import express, { Express } from "express"
+import type { Request, Response, NextFunction } from "express-serve-static-core"
 import dotenv from "dotenv"
 import cors from "cors"
 import path from "path"
@@ -11,7 +12,7 @@ import { User as UserModel } from "./models/User"
 
 dotenv.config()
 
-const app = express()
+const app: Express = express()
 app.use(express.json())
 app.use(cors())
 app.use(express.static(path.join(__dirname, "public")))
@@ -231,7 +232,7 @@ app.get("/api/pusher-health", (req: Request, res: Response) => {
 });
 
 // Middleware to check database connection with retries
-async function checkDbConnection(req: express.Request, res: express.Response, next: express.NextFunction) {
+async function checkDbConnection(req: Request, res: Response, next: NextFunction) {
 	try {
 		await connectToDatabase();
 		
@@ -341,7 +342,7 @@ app.get("/", (req: Request, res: Response) => {
 })
 
 // Error handling middleware
-app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
+app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 	console.error(err.stack);
 	res.status(500).json({
 		error: 'Internal Server Error',
