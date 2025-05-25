@@ -3,66 +3,36 @@ node_modules/
 .pnp/
 .pnp.js
 
-# Testing
-coverage/
-
-# Production
-build/
+# Production build
 dist/
+build/
 
-# Misc
-.DS_Store
+# Environment variables
 .env
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
+
+# Logs
+logs
 *.log
-*.zip
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Server specific
-server.zip
-server/dist/
-server/node_modules/
-
-# Client specific
-client/dist/
-client/node_modules/
-
-# Build outputs
-client/dist/
-server/dist/
-build/
-client/build/
-server/build/
-
-# Environment files
-.env
-.env.local
-.env.*.local
-.env.development
-.env.test
-.env.production
-
-# IDE and editor files
+# Editor directories and files
 .idea/
 .vscode/
 *.swp
 *.swo
 .DS_Store
 
-# Logs
-logs/
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+# TypeScript
+*.tsbuildinfo
+
+# Testing
+coverage/
 
 # Temporary files
 *.tmp

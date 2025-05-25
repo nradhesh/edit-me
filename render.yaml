@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: edit-me-backend
+    name: edit-me-server
     env: node
     region: oregon # or choose a region closer to your users
     plan: free
@@ -12,13 +12,9 @@ services:
         value: production
       - key: MONGODB_URI
         sync: false
-      - key: PUSHER_APP_ID
-        value: "1998026"
-      - key: PUSHER_KEY
-        value: "8bd2ea2900117f155976"
-      - key: PUSHER_SECRET
-        value: "50a68da6917f27b37f6e"
-      - key: PUSHER_CLUSTER
-        value: "ap2"
+      - key: CLIENT_URL
+        value: https://edit-me-client.vercel.app
+      - key: PORT
+        value: 10000
     healthCheckPath: /api/health
     autoDeploy: true 

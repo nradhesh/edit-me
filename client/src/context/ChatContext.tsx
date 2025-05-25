@@ -26,6 +26,10 @@ function ChatContextProvider({ children }: { children: ReactNode }) {
     const [isNewMessage, setIsNewMessage] = useState<boolean>(false)
     const [lastScrollHeight, setLastScrollHeight] = useState<number>(0)
 
+    const sendMessage = (message: ChatMessage) => {
+        socket.emit(SocketEvent.SEND_MESSAGE, { message });
+    };
+
     useEffect(() => {
         socket.on(
             SocketEvent.RECEIVE_MESSAGE,
@@ -48,6 +52,7 @@ function ChatContextProvider({ children }: { children: ReactNode }) {
                 setIsNewMessage,
                 lastScrollHeight,
                 setLastScrollHeight,
+                sendMessage,
             }}
         >
             {children}

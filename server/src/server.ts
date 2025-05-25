@@ -5,7 +5,8 @@ import dotenv from "dotenv"
 import cors from "cors"
 import path from "path"
 import mongoose from "mongoose"
-import Pusher from "pusher"
+import { createServer } from "http"
+import { Server } from "socket.io"
 import { userRouter } from './routes/userRoutes'
 import { SocketEvent, SocketId } from "./types/socket"
 import { USER_CONNECTION_STATUS, User } from "./types/user"
@@ -14,18 +15,18 @@ import { User as UserModel } from "./models/User"
 dotenv.config()
 
 const app: Application = express()
+const httpServer = createServer(app)
+const io = new Server(httpServer, {
+	cors: {
+		origin: process.env.CLIENT_URL || "http://localhost:5173",
+		methods: ["GET", "POST"],
+		credentials: true
+	}
+})
+
 app.use(express.json())
 app.use(cors())
 app.use(express.static(path.join(__dirname, "public")))
-
-// Initialize Pusher
-const pusher = new Pusher({
-	appId: process.env.PUSHER_APP_ID!,
-	key: process.env.PUSHER_KEY!,
-	secret: process.env.PUSHER_SECRET!,
-	cluster: process.env.PUSHER_CLUSTER!,
-	useTLS: true
-});
 
 // MongoDB connection state
 let isConnected = false;
@@ -116,153 +117,104 @@ function getUserById(userId: string): User | null {
 	return user
 }
 
-// Pusher webhook endpoint for presence channels
-app.post('/api/pusher/auth', (req: Request, res: Response) => {
-	const socketId = req.body.socket_id;
-	const channel = req.body.channel_name;
-	const presenceData = {
-		user_id: socketId,
-		user_info: {
-			// Add any user info you want to share
-			timestamp: new Date().toISOString()
-		}
-	};
+// Socket.IO connection handling
+io.on('connection', (socket) => {
+	console.log('Client connected:', socket.id);
 
-	try {
-		const authResponse = pusher.authorizeChannel(socketId, channel, presenceData);
-		res.send(authResponse);
-	} catch (error) {
-		console.error('Pusher auth error:', error);
-		res.status(403).send('Forbidden');
-	}
-});
-
-// Join room endpoint
-app.post('/api/join-room', async (req: Request, res: Response) => {
-	const { roomId, username } = req.body;
-	
-	try {
-		const isUsernameExist = getUsersInRoom(roomId).some(
-			(u) => u.username === username
-		);
-		
-		if (isUsernameExist) {
-			return res.status(400).json({ error: 'Username already exists' });
-		}
-
-		const userId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-		const user: User = {
-			username,
-			roomId,
-			status: USER_CONNECTION_STATUS.ONLINE,
-			cursorPosition: 0,
-			typing: false,
-			socketId: userId,
-			currentFile: null,
-		};
-
-		userSocketMap.push(user);
-		
-		// Trigger user joined event
-		await pusher.trigger(roomId, SocketEvent.USER_JOINED, { user });
-		
-		// Get all users in room and send join accepted
-		const users = getUsersInRoom(roomId);
-		await pusher.trigger(userId, SocketEvent.JOIN_ACCEPTED, { user, users });
-
+	socket.on(SocketEvent.JOIN_REQUEST, async ({ roomId, username, userId }) => {
 		try {
-			await UserModel.create({
-				...user,
-				email: `${username}@temp.com`,
-				password: 'socket-user',
-			});
-		} catch (err) {
-			console.error("Error saving user to MongoDB:", err);
+			if (!roomId) {
+				socket.emit('error', { message: 'Room ID is required' });
+				return;
+			}
+
+			const isUsernameExist = getUsersInRoom(roomId).some(
+				(u) => u.username === username
+			);
+			
+			if (isUsernameExist) {
+				socket.emit(SocketEvent.USERNAME_EXISTS);
+				return;
+			}
+
+			const user: User = {
+				username,
+				roomId,
+				status: USER_CONNECTION_STATUS.ONLINE,
+				cursorPosition: 0,
+				typing: false,
+				socketId: userId,
+				currentFile: null,
+			};
+
+			userSocketMap.push(user);
+			
+			// Join the room
+			socket.join(roomId);
+			
+			// Notify others in the room
+			socket.to(roomId).emit(SocketEvent.USER_JOINED, { user });
+			
+			// Send join accepted with all users in room
+			const users = getUsersInRoom(roomId);
+			socket.emit(SocketEvent.JOIN_ACCEPTED, { user, users });
+
+			try {
+				await UserModel.create({
+					...user,
+					email: `${username}@temp.com`,
+					password: 'socket-user',
+				});
+			} catch (err) {
+				console.error("Error saving user to MongoDB:", err);
+			}
+		} catch (error) {
+			console.error('Join room error:', error);
+			socket.emit('error', { message: 'Failed to join room' });
 		}
+	});
 
-		res.json({ success: true, userId });
-	} catch (error) {
-		console.error('Join room error:', error);
-		res.status(500).json({ error: 'Failed to join room' });
-	}
-});
-
-// Leave room endpoint
-app.post('/api/leave-room', async (req: Request, res: Response) => {
-	const { userId } = req.body;
-	
-	try {
-		const user = getUserById(userId);
-		if (!user) {
-			return res.status(404).json({ error: 'User not found' });
+	socket.on('disconnect', async () => {
+		const user = getUserById(socket.id);
+		if (user) {
+			try {
+				const roomId = getRoomId(socket.id);
+				userSocketMap = userSocketMap.filter((u) => u.socketId !== socket.id);
+				
+				// Notify others in the room
+				socket.to(roomId).emit(SocketEvent.USER_DISCONNECTED, { user });
+			} catch (error) {
+				console.error('Error handling disconnect:', error);
+			}
 		}
+	});
 
-		const roomId = getRoomId(userId);
-		userSocketMap = userSocketMap.filter((u) => u.socketId !== userId);
-		
-		// Trigger user left event
-		await pusher.trigger(roomId, SocketEvent.USER_DISCONNECTED, { user });
-		
-		res.json({ success: true });
-	} catch (error) {
-		console.error('Leave room error:', error);
-		res.status(500).json({ error: 'Failed to leave room' });
-	}
-});
-
-// Add a Pusher health check endpoint
-app.get("/api/pusher-health", (req: Request, res: Response) => {
-	try {
-		res.status(200).json({ 
-			status: "ok", 
-			message: "Pusher is configured",
-			environment: process.env.NODE_ENV,
-			timestamp: new Date().toISOString(),
-			appId: process.env.PUSHER_APP_ID ? 'configured' : 'missing',
-			key: process.env.PUSHER_KEY ? 'configured' : 'missing',
-			cluster: process.env.PUSHER_CLUSTER ? 'configured' : 'missing'
-		});
-	} catch (error) {
-		console.error('Pusher health check failed:', error);
-		res.status(500).json({
-			status: 'error',
-			message: 'Pusher check failed',
-			error: error instanceof Error ? error.message : 'Unknown error'
-		});
-	}
-});
-
-// Middleware to check database connection with retries
-async function checkDbConnection(req: Request, res: Response, next: NextFunction) {
-	try {
-		await connectToDatabase();
-		
-		// Double check connection state
-		if (mongoose.connection.readyState !== 1) {
-			throw new Error(`Database not ready. Current state: ${mongoose.connection.readyState}`);
+	// Handle other socket events
+	socket.on(SocketEvent.SEND_MESSAGE, (data) => {
+		const user = getUserById(socket.id);
+		if (user) {
+			try {
+				const roomId = getRoomId(socket.id);
+				socket.to(roomId).emit(SocketEvent.RECEIVE_MESSAGE, data);
+			} catch (error) {
+				console.error('Error sending message:', error);
+			}
 		}
-		
-		next();
-	} catch (error) {
-		console.error('Database connection check failed:', error);
-		const state = mongoose.connection.readyState;
-		const states = ['disconnected', 'connected', 'connecting', 'disconnecting'];
-		
-		res.status(503).json({
-			error: 'Database connection not ready',
-			details: error instanceof Error ? error.message : 'Unknown error',
-			state,
-			stateName: states[state] || 'unknown',
-			isConnected,
-			connectionAttempts,
-			message: 'Please try again in a few moments'
-		});
-	}
-}
+	});
 
-// Add a test endpoint
-app.get("/api/test", (req: Request, res: Response) => {
-	res.json({ message: "API is working!" });
+	socket.on(SocketEvent.DRAWING_UPDATE, (data) => {
+		const user = getUserById(socket.id);
+		if (user) {
+			try {
+				const roomId = getRoomId(socket.id);
+				socket.to(roomId).emit(SocketEvent.DRAWING_UPDATE, data);
+			} catch (error) {
+				console.error('Error sending drawing update:', error);
+			}
+		}
+	});
+
+	// ... handle other events similarly ...
 });
 
 // Add a health check endpoint
@@ -272,8 +224,14 @@ app.get("/api/health", (req: Request, res: Response) => {
 		message: "Server is running",
 		environment: process.env.NODE_ENV,
 		timestamp: new Date().toISOString(),
-		dbState: mongoose.connection.readyState
+		dbState: mongoose.connection.readyState,
+		connectedClients: io.engine.clientsCount
 	});
+});
+
+// Add a test endpoint
+app.get("/api/test", (req: Request, res: Response) => {
+	res.json({ message: "API is working!" });
 });
 
 // Test endpoint to check database connection
@@ -301,42 +259,6 @@ app.get('/api/test-db', async (req: Request, res: Response) => {
 	}
 });
 
-// Add a test endpoint for Pusher
-app.get("/api/test-pusher", async (req: Request, res: Response) => {
-    try {
-        // Test Pusher connection
-        await pusher.trigger('test-channel', 'test-event', {
-            message: 'Test message',
-            timestamp: new Date().toISOString()
-        });
-
-        res.status(200).json({
-            status: "ok",
-            message: "Pusher test successful",
-            config: {
-                appId: process.env.PUSHER_APP_ID ? 'configured' : 'missing',
-                key: process.env.PUSHER_KEY ? 'configured' : 'missing',
-                cluster: process.env.PUSHER_CLUSTER ? 'configured' : 'missing',
-                secret: process.env.PUSHER_SECRET ? 'configured' : 'missing'
-            },
-            timestamp: new Date().toISOString()
-        });
-    } catch (error) {
-        console.error('Pusher test failed:', error);
-        res.status(500).json({
-            status: 'error',
-            message: 'Pusher test failed',
-            error: error instanceof Error ? error.message : 'Unknown error',
-            config: {
-                appId: process.env.PUSHER_APP_ID ? 'configured' : 'missing',
-                key: process.env.PUSHER_KEY ? 'configured' : 'missing',
-                cluster: process.env.PUSHER_CLUSTER ? 'configured' : 'missing',
-                secret: process.env.PUSHER_SECRET ? 'configured' : 'missing'
-            }
-        });
-    }
-});
-
 // Serve frontend
 app.get("/", (req: Request, res: Response) => {
 	res.sendFile(path.join(__dirname, "..", "public", "index.html"))
@@ -356,11 +278,11 @@ const PORT = process.env.PORT || 5000
 
 // Only start the server if we're not in a serverless environment
 if (process.env.NODE_ENV !== "production") {
-	app.listen(PORT, () => {
+	httpServer.listen(PORT, () => {
 		console.log(`Server is running on port ${PORT}`)
 	})
 }
 
 // Export for serverless
-export { app, pusher };
+export { app, io };
 export default app;

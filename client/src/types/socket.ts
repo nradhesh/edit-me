@@ -29,7 +29,8 @@ enum SocketEvent {
 }
 
 interface SocketContext {
-    socket: Socket
+    socket: Socket;
+    isConnected: boolean;
 }
 
 export { SocketEvent, SocketContext, SocketId }
