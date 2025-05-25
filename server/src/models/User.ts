@@ -1,50 +1,60 @@
-import mongoose from "mongoose"
+import mongoose, { Document, Schema } from "mongoose"
+import { USER_CONNECTION_STATUS } from "../types/user"
 
-export enum USER_CONNECTION_STATUS {
-  ONLINE = "online",
-  OFFLINE = "offline",
-  AWAY = "away",
+export interface IUser extends Document {
+    username: string
+    socketId: string
+    roomId: string
+    status: USER_CONNECTION_STATUS
+    cursorPosition: number
+    typing: boolean
+    currentFile: string | null
+    createdAt: Date
+    updatedAt: Date
 }
 
-export interface IUser {
-  username: string
-  email: string
-  password: string
-  roomId?: string
-  status?: USER_CONNECTION_STATUS
-  cursorPosition?: number
-  typing?: boolean
-  currentFile?: string | null
-  socketId?: string
-  createdAt: Date
-  updatedAt: Date
-}
-
-const userSchema = new mongoose.Schema<IUser>({
-  username: { type: String, required: true, unique: true },
-  email: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
-  roomId: { type: String },
-  status: {
-    type: String,
-    enum: Object.values(USER_CONNECTION_STATUS),
-    default: USER_CONNECTION_STATUS.OFFLINE
-  },
-  cursorPosition: { type: Number, default: 0 },
-  typing: { type: Boolean, default: false },
-  currentFile: { type: String, default: null },
-  socketId: { type: String }
-}, { 
-  timestamps: true,
-  toJSON: {
-    transform: (doc, ret) => {
-      delete ret.password;
-      return ret;
+const userSchema = new Schema<IUser>(
+    {
+        username: {
+            type: String,
+            required: true,
+            trim: true
+        },
+        socketId: {
+            type: String,
+            required: true,
+            unique: true
+        },
+        roomId: {
+            type: String,
+            required: true
+        },
+        status: {
+            type: String,
+            enum: Object.values(USER_CONNECTION_STATUS),
+            default: USER_CONNECTION_STATUS.OFFLINE
+        },
+        cursorPosition: {
+            type: Number,
+            default: 0
+        },
+        typing: {
+            type: Boolean,
+            default: false
+        },
+        currentFile: {
+            type: String,
+            default: null
+        }
+    },
+    {
+        timestamps: true
     }
-  }
-});
+)
 
-// Add index for faster queries
-userSchema.index({ username: 1, email: 1 });
+// Index for faster queries
+userSchema.index({ roomId: 1, status: 1 })
+userSchema.index({ socketId: 1 }, { unique: true })
+userSchema.index({ updatedAt: 1 })
 
 export const User = mongoose.model<IUser>("User", userSchema)
