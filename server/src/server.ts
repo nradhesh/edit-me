@@ -1,5 +1,5 @@
 console.log("=== Edit Me backend server starting up! ===");
-import express from "express"
+import express, { Application } from "express"
 import type { Request, Response, NextFunction } from "express"
 import dotenv from "dotenv"
 import cors from "cors"
@@ -13,7 +13,7 @@ import { User as UserModel } from "./models/User"
 
 dotenv.config()
 
-const app = express()
+const app: Application = express()
 app.use(express.json())
 app.use(cors())
 app.use(express.static(path.join(__dirname, "public")))
