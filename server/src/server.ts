@@ -7,8 +7,8 @@ import path from "path"
 import mongoose from "mongoose"
 import { userRouter } from './routes/userRoutes'
 import { SocketEvent, SocketId } from "./types/socket"
-import { USER_CONNECTION_STATUS } from "./types/user"
-import { User } from "./models/User"
+import { USER_CONNECTION_STATUS, User } from "./types/user"
+import { User as UserModel } from "./models/User"
 
 dotenv.config()
 
@@ -28,10 +28,13 @@ const io = new Server(server, {
 
 // MongoDB connection state
 let isConnected = false;
+let connectionAttempts = 0;
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 2000; // 2 seconds
 
-// Connect to MongoDB with serverless-friendly settings
-async function connectToDatabase() {
-	if (isConnected) {
+// Connect to MongoDB with serverless-friendly settings and retries
+async function connectToDatabase(retryCount = 0): Promise<void> {
+	if (isConnected && mongoose.connection.readyState === 1) {
 		return;
 	}
 
@@ -44,44 +47,60 @@ async function connectToDatabase() {
 		// Close any existing connection first
 		if (mongoose.connection.readyState !== 0) {
 			await mongoose.connection.close();
+			isConnected = false;
 		}
 
+		console.log(`Attempting to connect to MongoDB (attempt ${retryCount + 1}/${MAX_RETRIES})...`);
+		
 		await mongoose.connect(mongoUri, {
-			serverSelectionTimeoutMS: 5000, // Timeout after 5s instead of 30s
-			socketTimeoutMS: 45000, // Close sockets after 45s of inactivity
-			family: 4, // Use IPv4, skip trying IPv6
-			maxPoolSize: 10, // Maintain up to 10 socket connections
-			minPoolSize: 5, // Maintain at least 5 socket connections
-			connectTimeoutMS: 10000, // Give up initial connection after 10s
-			heartbeatFrequencyMS: 10000, // Check server status every 10s
+			serverSelectionTimeoutMS: 5000,
+			socketTimeoutMS: 45000,
+			family: 4,
+			maxPoolSize: 10,
+			minPoolSize: 5,
+			connectTimeoutMS: 10000,
+			heartbeatFrequencyMS: 10000,
 			retryWrites: true,
 			retryReads: true,
-			w: 'majority', // Write concern
-			wtimeoutMS: 2500, // Write timeout
+			w: 'majority',
+			wtimeoutMS: 2500,
 		});
 
+		// Verify connection is actually established
+		if (mongoose.connection.readyState !== 1) {
+			throw new Error(`Connection not ready after connect. State: ${mongoose.connection.readyState}`);
+		}
+
 		isConnected = true;
+		connectionAttempts = 0;
 		console.log('MongoDB connected successfully');
 	} catch (error) {
-		console.error('MongoDB connection error:', error);
+		console.error(`MongoDB connection error (attempt ${retryCount + 1}/${MAX_RETRIES}):`, error);
 		isConnected = false;
+
+		if (retryCount < MAX_RETRIES - 1) {
+			console.log(`Retrying connection in ${RETRY_DELAY}ms...`);
+			await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+			return connectToDatabase(retryCount + 1);
+		}
+
 		throw error;
 	}
 }
 
-let userSocketMap: User[] = []
+let userSocketMap: Array<User> = []
 
-function getUsersInRoom(roomId: string): User[] {
-	return userSocketMap.filter((user) => user.roomId == roomId)
+function getUsersInRoom(roomId: string): Array<User> {
+	return userSocketMap.filter((user) => user.roomId === roomId)
 }
 
 function getRoomId(socketId: SocketId): string | null {
-	const roomId = userSocketMap.find((user) => user.socketId === socketId)?.roomId
-	if (!roomId) {
-		console.error("Room ID is undefined for socket ID:", socketId)
-		return null
+	const user = userSocketMap.find((user) => user.socketId === socketId);
+	if (!user?.roomId) {
+		console.error("Room ID is undefined for socket ID:", socketId);
+		return null;
 	}
-	return roomId
+	return user.roomId;
 }
 
 function getUserBySocketId(socketId: SocketId): User | null {
@@ -119,7 +138,11 @@ io.on("connection", (socket) => {
 		io.to(socket.id).emit(SocketEvent.JOIN_ACCEPTED, { user, users })
 
 		try {
-			await UserModel.create(user)
+			await UserModel.create({
+				...user,
+				email: `${username}@temp.com`, // Temporary email for socket users
+				password: 'socket-user', // Temporary password for socket users
+			})
 		} catch (err) {
 			console.error("Error saving user to MongoDB:", err)
 		}
@@ -277,20 +300,29 @@ io.on("connection", (socket) => {
 	})
 })
 
-// Middleware to check database connection
+// Middleware to check database connection with retries
 async function checkDbConnection(req: express.Request, res: express.Response, next: express.NextFunction) {
 	try {
 		await connectToDatabase();
+		
+		// Double check connection state
 		if (mongoose.connection.readyState !== 1) {
 			throw new Error(`Database not ready. Current state: ${mongoose.connection.readyState}`);
 		}
+		
 		next();
 	} catch (error) {
 		console.error('Database connection check failed:', error);
+		const state = mongoose.connection.readyState;
+		const states = ['disconnected', 'connected', 'connecting', 'disconnecting'];
+		
 		res.status(503).json({
 			error: 'Database connection not ready',
 			details: error instanceof Error ? error.message : 'Unknown error',
-			state: mongoose.connection.readyState,
+			state,
+			stateName: states[state] || 'unknown',
+			isConnected,
+			connectionAttempts,
 			message: 'Please try again in a few moments'
 		});
 	}
