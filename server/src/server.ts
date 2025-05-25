@@ -309,6 +309,12 @@ if (process.env.NODE_ENV !== "production") {
 	httpServer.listen(PORT, () => {
 		console.log(`Server is running on port ${PORT}`)
 	})
+} else {
+	// In production (Render), always start the server
+	httpServer.listen(PORT, '0.0.0.0', () => {
+		console.log(`Server is running in production mode on port ${PORT}`)
+		console.log('Server bound to all network interfaces (0.0.0.0)')
+	})
 }
 
 // Export for serverless

@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: edit-me-server
+    name: edit-me-backend
     env: node
     region: oregon # or choose a region closer to your users
     plan: free
@@ -17,4 +17,5 @@ services:
       - key: PORT
         value: 10000
     healthCheckPath: /api/health
-    autoDeploy: true 
+    autoDeploy: true
+    port: 10000 
