@@ -47,7 +47,13 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
                 reconnectionDelayMax: 5000,
                 timeout: 20000,
                 autoConnect: true,
-                transports: ['websocket', 'polling'],
+                transports: ['polling', 'websocket'],
+                path: '/socket.io/',
+                forceNew: true,
+                withCredentials: true,
+                extraHeaders: {
+                    'Access-Control-Allow-Origin': '*'
+                }
             }),
         [],
     )
@@ -57,7 +63,22 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
             console.error("Socket connection error:", err);
             setStatus(USER_STATUS.CONNECTION_FAILED);
             toast.dismiss();
-            toast.error(`Failed to connect to server: ${err.message || 'Unknown error'}`);
+            
+            // More detailed error message based on error type
+            let errorMessage = 'Failed to connect to server';
+            if (err.message) {
+                if (err.message.includes('websocket')) {
+                    errorMessage = 'WebSocket connection failed. Falling back to polling...';
+                } else if (err.message.includes('timeout')) {
+                    errorMessage = 'Connection timed out. Please check your internet connection.';
+                } else if (err.message.includes('xhr poll error')) {
+                    errorMessage = 'Polling connection failed. Please try again.';
+                } else {
+                    errorMessage = `Connection error: ${err.message}`;
+                }
+            }
+            
+            toast.error(errorMessage);
             
             // Log connection details for debugging
             console.log('Connection details:', {
@@ -65,6 +86,9 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
                 socketId: socket.id,
                 connected: socket.connected,
                 disconnected: socket.disconnected,
+                transport: socket.io.engine?.transport?.name,
+                upgrade: socket.io.engine?.upgrade,
+                readyState: socket.io.engine?.readyState
             });
         },
         [setStatus, socket],

@@ -21,9 +21,21 @@ const server = http.createServer(app)
 const io = new Server(server, {
 	cors: {
 		origin: "*",
+		methods: ["GET", "POST"],
+		credentials: true
 	},
 	maxHttpBufferSize: 1e8,
 	pingTimeout: 60000,
+	transports: ['polling', 'websocket'],
+	allowEIO3: true,
+	path: '/socket.io/',
+	connectTimeout: 45000,
+	upgradeTimeout: 30000,
+	allowUpgrades: true,
+	perMessageDeflate: false,
+	httpCompression: {
+		threshold: 2048
+	}
 })
 
 // MongoDB connection state
@@ -373,6 +385,19 @@ app.get('/api/test-db', async (req, res) => {
 			isConnected
 		});
 	}
+});
+
+// Add a socket.io health check endpoint
+app.get("/api/socket-health", (req: Request, res: Response) => {
+	res.status(200).json({ 
+		status: "ok", 
+		message: "Socket.IO server is running",
+		environment: process.env.NODE_ENV,
+		timestamp: new Date().toISOString(),
+		transports: io.engine.transports,
+		upgrades: io.engine.upgrades,
+		clientsCount: io.engine.clientsCount
+	});
 });
 
 // Serve frontend
