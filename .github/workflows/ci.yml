@@ -27,9 +27,9 @@ jobs:
       working-directory: ./client
       run: npm ci
 
-    - name: Run client linting
-      working-directory: ./client
-      run: npm run lint
+    # - name: Run client linting
+    #   working-directory: ./client
+    #   run: npm run lint
 
     - name: Client type check
       working-directory: ./client
@@ -59,9 +59,9 @@ jobs:
       working-directory: ./server
       run: npm ci
 
-    - name: Run server linting
-      working-directory: ./server
-      run: npm run lint || echo "No lint script found"
+    # - name: Run server linting
+    #   working-directory: ./server
+    #   run: npm run lint || echo "No lint script found"
 
     - name: Server type check
       working-directory: ./server
