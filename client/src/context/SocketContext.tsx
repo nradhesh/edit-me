@@ -131,10 +131,10 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 			// Create new socket instance with more resilient settings
 			const newSocket = io(BACKEND_URL, {
 				path: '/socket.io',
-				transports: ['websocket', 'polling'], // Allow fallback to polling
-				reconnectionAttempts: 5,
+				transports: ['polling', 'websocket'], // Try polling first, then upgrade to websocket
+				reconnectionAttempts: 10, // Increased attempts
 				reconnectionDelay: 1000,
-				timeout: 20000, // Increased timeout
+				timeout: 30000, // Increased timeout
 				forceNew: true,
 				autoConnect: false,
 				withCredentials: true,
@@ -143,10 +143,15 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 				port: new URL(BACKEND_URL).port || (BACKEND_URL.startsWith('https') ? '443' : '80'),
 				secure: BACKEND_URL.startsWith('https'),
 				rejectUnauthorized: false,
-				upgrade: true, // Enable upgrade
+				upgrade: true,
 				rememberUpgrade: true,
 				perMessageDeflate: {
 					threshold: 1024
+				},
+				// Add query parameters for better connection tracking
+				query: {
+					clientTimestamp: Date.now(),
+					clientVersion: '1.0.0'
 				}
 			})
 
@@ -238,7 +243,8 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 				// Only attempt reconnect for certain disconnect reasons
 				if (reason === 'io server disconnect' || 
 					reason === 'transport close' || 
-					reason === 'ping timeout') {
+					reason === 'ping timeout' ||
+					reason === 'transport error') {
 					console.log('🔄 Scheduling reconnect attempt...')
 					toast.loading('Attempting to reconnect...', { id: 'connection-status' })
 					reconnectTimeoutRef.current = setTimeout(() => {
@@ -246,7 +252,7 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 							console.log('🔄 Attempting to reconnect...')
 							initializeSocket()
 						}
-					}, 2000) // Reduced reconnect delay
+					}, 2000)
 				}
 			}
 
@@ -267,6 +273,16 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 					duration: 5000,
 					icon: '❌'
 				})
+
+				// Retry connection on error
+				if (isMountedRef.current) {
+					setTimeout(() => {
+						if (isMountedRef.current) {
+							console.log('🔄 Retrying connection after error...')
+							initializeSocket()
+						}
+					}, 2000)
+				}
 			}
 
 			const handleConnectError = (error: Error) => {
@@ -281,11 +297,6 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 				setStatus('error')
 				setIsConnected(false)
 				setSocket(null)
-				toast.error('Failed to connect: ' + error.message, { 
-					id: 'connection-status',
-					duration: 5000,
-					icon: '❌'
-				})
 
 				// Add more detailed error handling
 				if (error.message.includes('timeout')) {
@@ -293,10 +304,26 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 						id: 'connection-status',
 						duration: 5000
 					})
+					// Retry with polling transport
+					if (newSocket.io.engine.transport.name === 'websocket') {
+						console.log('🔄 Retrying with polling transport...')
+						newSocket.io.opts.transports = ['polling']
+						setTimeout(() => {
+							if (isMountedRef.current) {
+								initializeSocket()
+							}
+						}, 2000)
+					}
 				} else if (error.message.includes('xhr poll error')) {
 					toast.error('Polling error - server might be starting. Will retry...', { 
 						id: 'connection-status',
 						duration: 5000
+					})
+				} else {
+					toast.error('Failed to connect: ' + error.message, { 
+						id: 'connection-status',
+						duration: 5000,
+						icon: '❌'
 					})
 				}
 			}
@@ -316,6 +343,8 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 			// Connect with retry
 			const connectWithRetry = () => {
 				try {
+					// Start with polling transport
+					newSocket.io.opts.transports = ['polling']
 					newSocket.connect()
 				} catch (error) {
 					console.error('Failed to connect:', error)
