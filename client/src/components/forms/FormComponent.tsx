@@ -2,7 +2,7 @@ import { useAppContext } from "@/context/AppContext"
 import { useSocket } from "@/context/SocketContext"
 import { SocketEvent } from "@/types/socket"
 import { USER_STATUS } from "@/types/user"
-import { ChangeEvent, FormEvent, useEffect, useRef } from "react"
+import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react"
 import { toast } from "react-hot-toast"
 import { useLocation, useNavigate } from "react-router-dom"
 import { v4 as uuidv4 } from "uuid"
@@ -11,7 +11,9 @@ import logo from "@/assets/logo.png"
 const FormComponent = () => {
     const location = useLocation()
     const { currentUser, setCurrentUser, status, setStatus } = useAppContext()
-    const { socket } = useSocket()
+    const { socket, isConnected } = useSocket()
+    const [isJoining, setIsJoining] = useState(false)
+    const joinTimeoutRef = useRef<NodeJS.Timeout>()
 
     const usernameRef = useRef<HTMLInputElement | null>(null)
     const navigate = useNavigate()
@@ -47,10 +49,26 @@ const FormComponent = () => {
 
     const joinRoom = (e: FormEvent<HTMLFormElement>) => {
         e.preventDefault()
-        if (status === USER_STATUS.ATTEMPTING_JOIN) return
+        if (status === USER_STATUS.ATTEMPTING_JOIN || isJoining) return
         if (!validateForm()) return
-        toast.loading("Joining room...")
+        if (!isConnected) {
+            toast.error("Not connected to server. Please wait...")
+            return
+        }
+
+        setIsJoining(true)
+        const joinToast = toast.loading("Joining room...", { id: 'join-status' })
         setStatus(USER_STATUS.ATTEMPTING_JOIN)
+
+        // Set a timeout for the join request
+        joinTimeoutRef.current = setTimeout(() => {
+            if (status === USER_STATUS.ATTEMPTING_JOIN) {
+                toast.error("Join request timed out. Please try again.", { id: 'join-status' })
+                setStatus(USER_STATUS.DISCONNECTED)
+                setIsJoining(false)
+            }
+        }, 10000) // 10 second timeout
+
         socket.emit(SocketEvent.JOIN_REQUEST, currentUser)
     }
 
@@ -73,6 +91,8 @@ const FormComponent = () => {
         const isRedirect = sessionStorage.getItem("redirect") || false
 
         if (status === USER_STATUS.JOINED && !isRedirect) {
+            clearTimeout(joinTimeoutRef.current)
+            toast.success("Successfully joined room!", { id: 'join-status' })
             const username = currentUser.username
             sessionStorage.setItem("redirect", "true")
             navigate(`/editor/${currentUser.roomId}`, {
@@ -88,6 +108,13 @@ const FormComponent = () => {
         }
     }, [currentUser, location.state?.redirect, navigate, setStatus, socket, status])
 
+    // Cleanup on unmount
+    useEffect(() => {
+        return () => {
+            clearTimeout(joinTimeoutRef.current)
+        }
+    }, [])
+
     return (
         <div className="flex w-full max-w-[500px] flex-col items-center justify-center gap-4 p-4 sm:w-[500px] sm:p-8">
             <img src={logo} alt="Logo" className="w-full"/>
@@ -99,6 +126,7 @@ const FormComponent = () => {
                     className="w-full rounded-md border border-gray-500 bg-darkHover px-3 py-3 focus:outline-none"
                     onChange={handleInputChanges}
                     value={currentUser.roomId}
+                    disabled={isJoining}
                 />
                 <input
                     type="text"
@@ -108,17 +136,24 @@ const FormComponent = () => {
                     onChange={handleInputChanges}
                     value={currentUser.username}
                     ref={usernameRef}
+                    disabled={isJoining}
                 />
                 <button
                     type="submit"
-                    className="mt-2 w-full rounded-md bg-primary px-8 py-3 text-lg font-semibold text-black"
+                    className={`mt-2 w-full rounded-md bg-primary px-8 py-3 text-lg font-semibold text-black ${
+                        isJoining ? 'opacity-50 cursor-not-allowed' : ''
+                    }`}
+                    disabled={isJoining}
                 >
-                    Join
+                    {isJoining ? 'Joining...' : 'Join'}
                 </button>
             </form>
             <button
-                className="cursor-pointer select-none underline"
+                className={`cursor-pointer select-none underline ${
+                    isJoining ? 'opacity-50 cursor-not-allowed' : ''
+                }`}
                 onClick={createNewRoomId}
+                disabled={isJoining}
             >
                 Generate Unique Room Id
             </button>

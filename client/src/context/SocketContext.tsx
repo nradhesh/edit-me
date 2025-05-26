@@ -1,6 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
 import React, { ReactNode, createContext, useContext, useEffect, useState, useRef, ErrorInfo, useCallback } from "react"
 import { io, Socket } from "socket.io-client"
+import toast from "react-hot-toast"
 
 // Ensure we're using the correct backend URL
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "https://edit-me-backend.onrender.com"
@@ -74,7 +75,7 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 	const lastMongoTestRef = useRef<number>(0)
 	const isInitializedRef = useRef(false)
 	const isMountedRef = useRef(true)
-	const shouldTestMongoRef = useRef(false) // Flag to control MongoDB testing
+	const shouldTestMongoRef = useRef(true) // Enable MongoDB testing by default
 
 	// Cleanup function
 	const cleanup = useCallback(() => {
@@ -131,18 +132,17 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 		try {
 			cleanup()
 
-			if (!isDevelopment) {
-				console.log('🔌 Creating new socket connection...')
-			}
+			console.log('🔌 Creating new socket connection...')
 			setStatus('connecting')
+			toast.loading('Connecting to server...', { id: 'connection-status' })
 
 			// Create new socket instance with optimized settings
 			const newSocket = io(BACKEND_URL, {
 				path: '/socket.io',
-				transports: ['websocket', 'polling'],
-				reconnectionAttempts: 5,
-				reconnectionDelay: 2000,
-				timeout: 20000,
+				transports: ['websocket'], // Only use websocket for better performance
+				reconnectionAttempts: 3, // Reduce reconnection attempts
+				reconnectionDelay: 1000, // Reduce reconnection delay
+				timeout: 10000, // Reduce timeout
 				forceNew: true,
 				autoConnect: false,
 				withCredentials: true,
@@ -151,40 +151,33 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 				port: new URL(BACKEND_URL).port || (BACKEND_URL.startsWith('https') ? '443' : '80'),
 				secure: BACKEND_URL.startsWith('https'),
 				rejectUnauthorized: false,
-				upgrade: true,
-				rememberUpgrade: true,
+				upgrade: false, // Disable upgrade since we're only using websocket
+				rememberUpgrade: false,
 				perMessageDeflate: {
-					threshold: 2048
+					threshold: 1024 // Reduce threshold for faster messages
 				}
 			})
 
 			// Add MongoDB test response handler with timeout
 			const handleMongoDBTest = (socket: Socket) => {
-				// Only test MongoDB if we haven't tested it recently
-				const now = Date.now()
-				if (now - lastMongoTestRef.current < 30000) { // Don't test more often than every 30 seconds
-					console.log('⏭️ Skipping MongoDB test - tested recently')
-					return
-				}
-
 				console.log('📊 Testing MongoDB connection...')
 				
 				// Create a promise that rejects after timeout
 				const timeoutPromise = new Promise((_, reject) => {
 					setTimeout(() => {
 						reject(new Error('MongoDB test timeout after 3 seconds'))
-					}, 3000) // Reduced timeout to 3 seconds
+					}, 3000)
 				})
 
 				// Create a promise that resolves when we get the response
 				const testPromise = new Promise((resolve) => {
 					const handler = (data: any) => {
-						if (!socketRef.current) return // Socket was cleaned up
+						if (!socketRef.current) return
 						
-						// Store the test time
+						const now = Date.now()
 						lastMongoTestRef.current = now
 
-						console.log('📊 MongoDB test response:', {
+						console.log('✅ MongoDB connection successful:', {
 							...data,
 							clientReceiveTime: now,
 							roundTripTime: now - data.timestamp
@@ -194,7 +187,7 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 					}
 					socket.on('mongodb-test-response', handler)
 					socket.emit('test-mongodb', { 
-						timestamp: now,
+						timestamp: Date.now(),
 						test: 'quick-connection-test'
 					})
 				})
@@ -202,11 +195,10 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 				// Race the promises
 				Promise.race([testPromise, timeoutPromise])
 					.catch((error) => {
-						if (!socketRef.current) return // Socket was cleaned up
+						if (!socketRef.current) return
 						
-						console.warn('⚠️ MongoDB test timed out or failed:', error)
-						// Store the failed test time to prevent rapid retries
-						lastMongoTestRef.current = now
+						console.error('❌ MongoDB test failed:', error)
+						lastMongoTestRef.current = Date.now()
 					})
 			}
 
@@ -214,21 +206,24 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 			const handleConnect = () => {
 				if (!isMountedRef.current) return
 				const connectionTime = Date.now() - startTime
-				if (!isDevelopment) {
-					console.log('✅ Socket connected successfully', {
-						socketId: newSocket.id,
-						timestamp: new Date().toISOString(),
-						transport: newSocket.io.engine.transport.name,
-						connectionTime: `${connectionTime}ms`
-					})
-				}
+				console.log('✅ Socket connected successfully', {
+					socketId: newSocket.id,
+					timestamp: new Date().toISOString(),
+					transport: newSocket.io.engine.transport.name,
+					connectionTime: `${connectionTime}ms`
+				})
 				setIsConnected(true)
 				setStatus('connected')
 				setSocket(newSocket)
+				toast.success('Connected to server!', { 
+					id: 'connection-status',
+					duration: 2000,
+					icon: '✅'
+				})
 
-				// Only test MongoDB if explicitly enabled
+				// Test MongoDB in the background without blocking
 				if (shouldTestMongoRef.current) {
-					handleMongoDBTest(newSocket)
+					setTimeout(() => handleMongoDBTest(newSocket), 1000)
 				}
 			}
 
@@ -242,9 +237,15 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 				setIsConnected(false)
 				setStatus('disconnected')
 				setSocket(null)
+				toast.error('Disconnected from server', { 
+					id: 'connection-status',
+					duration: 3000,
+					icon: '❌'
+				})
 
 				if (reason !== 'io client disconnect' && reason !== 'io server disconnect') {
 					console.log('🔄 Scheduling reconnect attempt...')
+					toast.loading('Attempting to reconnect...', { id: 'connection-status' })
 					reconnectTimeoutRef.current = setTimeout(() => {
 						if (isMountedRef.current) {
 							console.log('🔄 Attempting to reconnect...')
@@ -266,6 +267,11 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 				setStatus('error')
 				setIsConnected(false)
 				setSocket(null)
+				toast.error('Connection error: ' + error.message, { 
+					id: 'connection-status',
+					duration: 5000,
+					icon: '❌'
+				})
 			}
 
 			const handleConnectError = (error: Error) => {
@@ -280,12 +286,23 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 				setStatus('error')
 				setIsConnected(false)
 				setSocket(null)
+				toast.error('Failed to connect: ' + error.message, { 
+					id: 'connection-status',
+					duration: 5000,
+					icon: '❌'
+				})
 
 				// Add more detailed error handling
 				if (error.message.includes('timeout')) {
-					console.warn('⚠️ Connection timeout - server might be spinning up. Will retry...')
+					toast.error('Connection timeout - server might be spinning up. Will retry...', { 
+						id: 'connection-status',
+						duration: 5000
+					})
 				} else if (error.message.includes('xhr poll error')) {
-					console.warn('⚠️ Polling error - server might be starting. Will retry...')
+					toast.error('Polling error - server might be starting. Will retry...', { 
+						id: 'connection-status',
+						duration: 5000
+					})
 				}
 			}
 
@@ -301,25 +318,21 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 			isInitializedRef.current = true
 			hasEverInitialized.current = true
 
-			// Connect after setting up all handlers
-			if (!isDevelopment) {
-				console.log('🔌 Initiating socket connection...')
-			}
+			// Connect immediately
 			newSocket.connect()
 
 		} catch (error) {
-			if (!isDevelopment) {
-				console.error('❌ Failed to initialize socket:', {
-					error,
-					timestamp: new Date().toISOString(),
-					uptime: Date.now() - startTime
-				})
-			}
+			console.error('❌ Failed to initialize socket:', error)
 			if (isMountedRef.current) {
 				setStatus('error')
 				setIsConnected(false)
 				setSocket(null)
 				isInitializedRef.current = false
+				toast.error('Failed to initialize connection: ' + (error instanceof Error ? error.message : 'Unknown error'), { 
+					id: 'connection-status',
+					duration: 5000,
+					icon: '❌'
+				})
 			}
 		}
 	}, [cleanup])

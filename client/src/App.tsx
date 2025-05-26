@@ -1,19 +1,33 @@
-import { Route, BrowserRouter as Router, Routes } from "react-router-dom"
+import { BrowserRouter } from "react-router-dom"
+import { AppContextProvider } from "./context/AppContext"
+import { SocketProvider } from "./context/SocketContext"
+import { ViewContextProvider } from "./context/ViewContext"
+import { SettingContextProvider } from "./context/SettingContext"
+import { FileContextProvider } from "./context/FileContext"
+import { ChatContextProvider } from "./context/ChatContext"
+import AppRoutes from "./routes"
 import Toast from "./components/toast/Toast"
-import EditorPage from "./pages/EditorPage"
-import HomePage from "./pages/HomePage"
+import ConnectionStatus from "./components/connection/ConnectionStatus"
 
-const App = () => {
+function App() {
     return (
-        <>
-            <Router>
-                <Routes>
-                    <Route path="/" element={<HomePage />} />
-                    <Route path="/editor/:roomId" element={<EditorPage />} />
-                </Routes>
-            </Router>
-            <Toast /> {/* Toast component from react-hot-toast */}
-        </>
+        <BrowserRouter>
+            <AppContextProvider>
+                <SocketProvider>
+                    <ViewContextProvider>
+                        <SettingContextProvider>
+                            <FileContextProvider>
+                                <ChatContextProvider>
+                                    <AppRoutes />
+                                    <Toast />
+                                    <ConnectionStatus />
+                                </ChatContextProvider>
+                            </FileContextProvider>
+                        </SettingContextProvider>
+                    </ViewContextProvider>
+                </SocketProvider>
+            </AppContextProvider>
+        </BrowserRouter>
     )
 }
 
