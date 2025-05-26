@@ -27,7 +27,7 @@ const corsOptions = {
 		"https://edit-me-48ii.vercel.app"  // Updated correct frontend URL
 	],
 	methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-	allowedHeaders: ["Content-Type", "Authorization"],
+	allowedHeaders: ["Content-Type", "Authorization", "Access-Control-Allow-Origin"],
 	credentials: true,
 	maxAge: 86400 // 24 hours
 };
@@ -44,17 +44,52 @@ const io = new Server(httpServer, {
 	cors: corsOptions,
 	path: '/socket.io',
 	transports: ['polling', 'websocket'],  // Allow both transports
-	pingTimeout: 10000,  // Match frontend timeout
+	pingTimeout: 20000,  // Match client timeout
 	pingInterval: 25000,
-	connectTimeout: 10000,  // Match frontend timeout
+	connectTimeout: 20000,  // Match client timeout
 	allowEIO3: true,  // Allow Engine.IO v3 clients
 	allowUpgrades: true,  // Allow transport upgrades
+	perMessageDeflate: { threshold: 0 },  // Disable compression
 	cookie: {
 		name: 'io',
 		path: '/',
 		httpOnly: true,
 		sameSite: 'none',
 		secure: true
+	},
+	// Add better error handling
+	maxHttpBufferSize: 1e8,  // 100 MB
+	connectTimeout: 20000,
+	upgradeTimeout: 10000,
+	// Add better reconnection handling
+	allowReconnection: true,
+	reconnectionAttempts: 10,
+	reconnectionDelay: 1000,
+	reconnectionDelayMax: 5000
+})
+
+// Add connection middleware for better error handling
+io.use((socket, next) => {
+	try {
+		// Add connection metadata
+		socket.data = {
+			connectedAt: Date.now(),
+			clientInfo: socket.handshake.query,
+			transport: socket.conn.transport.name
+		}
+		
+		// Log connection attempt
+		console.log('New connection attempt:', {
+			id: socket.id,
+			transport: socket.conn.transport.name,
+			timestamp: new Date().toISOString(),
+			clientInfo: socket.handshake.query
+		})
+		
+		next()
+	} catch (error) {
+		console.error('Socket middleware error:', error)
+		next(error)
 	}
 })
 
@@ -174,7 +209,32 @@ function getUserById(userId: string): User | null {
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
-	console.log('Client connected:', socket.id);
+	console.log('Client connected:', {
+		id: socket.id,
+		transport: socket.conn.transport.name,
+		timestamp: new Date().toISOString(),
+		clientInfo: socket.data
+	});
+
+	// Add error handler for this socket
+	socket.on('error', (error) => {
+		console.error('Socket error:', {
+			socketId: socket.id,
+			error: error instanceof Error ? error.message : 'Unknown error',
+			timestamp: new Date().toISOString()
+		})
+	})
+
+	// Add disconnect handler with reason
+	socket.on('disconnect', (reason) => {
+		console.log('Client disconnected:', {
+			id: socket.id,
+			reason,
+			transport: socket.conn.transport.name,
+			timestamp: new Date().toISOString(),
+			uptime: Date.now() - (socket.data?.connectedAt || Date.now())
+		})
+	})
 
 	// Add MongoDB test handler
 	socket.on('test-mongodb', async (data) => {
@@ -296,21 +356,6 @@ io.on('connection', (socket) => {
 		} catch (error) {
 			console.error('Join room error:', error);
 			socket.emit('error', { message: 'Failed to join room' });
-		}
-	});
-
-	socket.on('disconnect', async () => {
-		const user = getUserById(socket.id);
-		if (user) {
-			try {
-				const roomId = getRoomId(socket.id);
-				userSocketMap = userSocketMap.filter((u) => u.socketId !== socket.id);
-				
-				// Notify others in the room
-				socket.to(roomId).emit(SocketEvent.USER_DISCONNECTED, { user });
-			} catch (error) {
-				console.error('Error handling disconnect:', error);
-			}
 		}
 	});
 
