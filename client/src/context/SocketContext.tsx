@@ -76,6 +76,7 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 	const isInitializedRef = useRef(false)
 	const isMountedRef = useRef(true)
 	const shouldTestMongoRef = useRef(true) // Enable MongoDB testing by default
+	const retryAttemptsRef = useRef(0) // Add ref to track retry attempts
 
 	// Cleanup function
 	const cleanup = useCallback(() => {
@@ -123,6 +124,7 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 
 		try {
 			cleanup()
+			retryAttemptsRef.current = 0 // Reset retry attempts on new initialization
 
 			console.log('🔌 Creating new socket connection...')
 			setStatus('connecting')
@@ -131,27 +133,33 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 			// Create new socket instance with more resilient settings
 			const newSocket = io(BACKEND_URL, {
 				path: '/socket.io',
-				transports: ['polling', 'websocket'], // Try polling first, then upgrade to websocket
-				reconnectionAttempts: 10, // Increased attempts
-				reconnectionDelay: 1000,
-				timeout: 30000, // Increased timeout
+				transports: ['polling'], // Only use polling initially
+				reconnectionAttempts: 3, // Reduced attempts to avoid rapid retries
+				reconnectionDelay: 5000, // Increased delay between attempts
+				timeout: 10000, // Reduced timeout to fail faster
 				forceNew: true,
 				autoConnect: false,
-				withCredentials: true,
+				withCredentials: false, // Disable credentials for CORS
 				host: new URL(BACKEND_URL).host,
 				hostname: new URL(BACKEND_URL).hostname,
 				port: new URL(BACKEND_URL).port || (BACKEND_URL.startsWith('https') ? '443' : '80'),
 				secure: BACKEND_URL.startsWith('https'),
 				rejectUnauthorized: false,
-				upgrade: true,
-				rememberUpgrade: true,
-				perMessageDeflate: {
-					threshold: 1024
-				},
+				upgrade: false, // Disable upgrade initially
+				rememberUpgrade: false,
+				perMessageDeflate: { threshold: 0 }, // Disable compression
 				// Add query parameters for better connection tracking
 				query: {
 					clientTimestamp: Date.now(),
-					clientVersion: '1.0.0'
+					clientVersion: '1.0.0',
+					transport: 'polling',
+					clientId: Math.random().toString(36).substring(7) // Add unique client ID
+				},
+				// Add headers for better CORS handling
+				extraHeaders: {
+					'Access-Control-Allow-Origin': '*',
+					'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
+					'Access-Control-Allow-Headers': 'Content-Type, Authorization'
 				}
 			})
 
@@ -218,6 +226,17 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 					icon: '✅'
 				})
 
+				// After successful polling connection, try to upgrade to WebSocket
+				setTimeout(() => {
+					if (socketRef.current?.connected) {
+						console.log('🔄 Attempting to upgrade to WebSocket...')
+						// Instead of using upgrade directly, we'll reconnect with WebSocket transport
+						socketRef.current.disconnect()
+						socketRef.current.io.opts.transports = ['polling', 'websocket']
+						socketRef.current.connect()
+					}
+				}, 2000)
+
 				// Test MongoDB in the background without blocking
 				if (shouldTestMongoRef.current) {
 					setTimeout(() => handleMongoDBTest(newSocket), 1000)
@@ -250,6 +269,10 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 					reconnectTimeoutRef.current = setTimeout(() => {
 						if (isMountedRef.current) {
 							console.log('🔄 Attempting to reconnect...')
+							// Reset transport to polling on reconnect
+							if (socketRef.current) {
+								socketRef.current.io.opts.transports = ['polling']
+							}
 							initializeSocket()
 						}
 					}, 2000)
@@ -274,11 +297,14 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 					icon: '❌'
 				})
 
-				// Retry connection on error
+				// Retry connection on error with polling
 				if (isMountedRef.current) {
 					setTimeout(() => {
 						if (isMountedRef.current) {
 							console.log('🔄 Retrying connection after error...')
+							if (socketRef.current) {
+								socketRef.current.io.opts.transports = ['polling']
+							}
 							initializeSocket()
 						}
 					}, 2000)
@@ -292,7 +318,10 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 					type: error.name,
 					stack: error.stack,
 					timestamp: new Date().toISOString(),
-					uptime: Date.now() - startTime
+					uptime: Date.now() - startTime,
+					url: BACKEND_URL,
+					transport: newSocket.io.engine?.transport?.name,
+					retryAttempt: retryAttemptsRef.current
 				})
 				setStatus('error')
 				setIsConnected(false)
@@ -304,21 +333,28 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 						id: 'connection-status',
 						duration: 5000
 					})
-					// Retry with polling transport
-					if (newSocket.io.engine.transport.name === 'websocket') {
-						console.log('🔄 Retrying with polling transport...')
-						newSocket.io.opts.transports = ['polling']
-						setTimeout(() => {
-							if (isMountedRef.current) {
-								initializeSocket()
-							}
-						}, 2000)
-					}
 				} else if (error.message.includes('xhr poll error')) {
-					toast.error('Polling error - server might be starting. Will retry...', { 
-						id: 'connection-status',
-						duration: 5000
+					// Check if the backend URL is accessible
+					fetch(BACKEND_URL, { 
+						method: 'HEAD',
+						mode: 'no-cors',
+						cache: 'no-cache'
+					}).then(() => {
+						toast.error('Server is reachable but socket connection failed. Will retry...', { 
+							id: 'connection-status',
+							duration: 5000
+						})
+					}).catch(() => {
+						toast.error('Server is not reachable. Please check your network connection.', { 
+							id: 'connection-status',
+							duration: 5000
+						})
 					})
+					
+					// Force polling transport on poll error
+					if (socketRef.current) {
+						socketRef.current.io.opts.transports = ['polling']
+					}
 				} else {
 					toast.error('Failed to connect: ' + error.message, { 
 						id: 'connection-status',
@@ -326,6 +362,16 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 						icon: '❌'
 					})
 				}
+
+				// Add exponential backoff for retries
+				retryAttemptsRef.current++
+				const retryDelay = Math.min(1000 * Math.pow(2, retryAttemptsRef.current), 30000)
+				console.log(`🔄 Scheduling retry in ${retryDelay}ms (attempt ${retryAttemptsRef.current})`)
+				setTimeout(() => {
+					if (isMountedRef.current) {
+						initializeSocket()
+					}
+				}, retryDelay)
 			}
 
 			// Add event listeners
@@ -343,8 +389,23 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 			// Connect with retry
 			const connectWithRetry = () => {
 				try {
-					// Start with polling transport
+					// Ensure we're using polling transport
 					newSocket.io.opts.transports = ['polling']
+					
+					// Add connection timeout
+					const connectionTimeout = setTimeout(() => {
+						if (!newSocket.connected) {
+							console.log('Connection attempt timed out, retrying...')
+							newSocket.disconnect()
+							initializeSocket()
+						}
+					}, 10000)
+
+					newSocket.once('connect', () => {
+						clearTimeout(connectionTimeout)
+						retryAttemptsRef.current = 0 // Reset retry attempts on successful connection
+					})
+
 					newSocket.connect()
 				} catch (error) {
 					console.error('Failed to connect:', error)
@@ -358,12 +419,14 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 							duration: 5000,
 							icon: '❌'
 						})
-						// Retry initialization after delay
+						// Retry initialization after delay with exponential backoff
+						retryAttemptsRef.current++
+						const retryDelay = Math.min(1000 * Math.pow(2, retryAttemptsRef.current), 30000)
 						setTimeout(() => {
 							if (isMountedRef.current) {
 								initializeSocket()
 							}
-						}, 5000)
+						}, retryDelay)
 					}
 				}
 			}
