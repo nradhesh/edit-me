@@ -51,8 +51,8 @@ class SocketErrorBoundary extends React.Component<{ children: ReactNode }, { has
 }
 
 const useSocket = () => {
-	const context = useContext(SocketContext)
-	if (!context) {
+    const context = useContext(SocketContext)
+    if (!context) {
 		console.warn('useSocket used outside of SocketProvider, returning safe default')
 		return {
 			socket: null,
@@ -60,8 +60,8 @@ const useSocket = () => {
 			emit: () => console.warn('Socket not available'),
 			status: 'disconnected' as const
 		}
-	}
-	return context
+    }
+    return context
 }
 
 const SocketProvider = ({ children }: { children: ReactNode }) => {
@@ -324,7 +324,7 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 		}
 	}, [cleanup])
 
-	useEffect(() => {
+    useEffect(() => {
 		if (!isDevelopment) {
 			console.log('SocketProvider mounted, checking initialization...')
 		}
@@ -343,7 +343,7 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 			console.log('Socket already initialized, skipping initialization')
 		}
 
-		return () => {
+        return () => {
 			if (!isDevelopment) {
 				console.log('SocketProvider unmounting, cleaning up...')
 			}
@@ -377,13 +377,13 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 		status
 	}
 
-	return (
+    return (
 		<SocketErrorBoundary>
 			<SocketContext.Provider value={value}>
-				{children}
-			</SocketContext.Provider>
+            {children}
+        </SocketContext.Provider>
 		</SocketErrorBoundary>
-	)
+    )
 }
 
 // Single export statement at the end

@@ -13,7 +13,7 @@ import { Server } from "socket.io"
 import { userRouter } from './routes/userRoutes'
 import { SocketEvent, SocketId } from "./types/socket"
 import { USER_CONNECTION_STATUS, User } from "./types/user"
-import { User as UserModel } from "./models/User"
+import { UserModel } from "./models/User"
 
 dotenv.config()
 
@@ -57,17 +57,31 @@ const RETRY_DELAY = 2000; // 2 seconds
 // Connect to MongoDB with serverless-friendly settings and retries
 async function connectToDatabase(retryCount = 0): Promise<void> {
 	if (isConnected && mongoose.connection.readyState === 1) {
+		console.log('MongoDB already connected, skipping connection attempt');
 		return;
 	}
 
 	try {
 		const mongoUri = process.env.MONGODB_URI;
 		if (!mongoUri) {
+			console.error('MONGODB_URI is not defined in environment variables');
 			throw new Error('MONGODB_URI is not defined');
 		}
 
+		// Log connection attempt (without sensitive info)
+		console.log('Attempting MongoDB connection:', {
+			attempt: retryCount + 1,
+			maxRetries: MAX_RETRIES,
+			uriLength: mongoUri.length,
+			hasUsername: mongoUri.includes('mongodb+srv://'),
+			hasPassword: mongoUri.includes('@'),
+			hasDatabase: mongoUri.includes('/chat-app'),
+			timestamp: new Date().toISOString()
+		});
+
 		// Close any existing connection first
 		if (mongoose.connection.readyState !== 0) {
+			console.log('Closing existing MongoDB connection...');
 			await mongoose.connection.close();
 			isConnected = false;
 		}
@@ -76,12 +90,12 @@ async function connectToDatabase(retryCount = 0): Promise<void> {
 		
 		// Add more connection options for better reliability
 		await mongoose.connect(mongoUri, {
-			serverSelectionTimeoutMS: 10000, // Increased from 5000
+			serverSelectionTimeoutMS: 10000,
 			socketTimeoutMS: 45000,
 			family: 4,
 			maxPoolSize: 10,
 			minPoolSize: 5,
-			connectTimeoutMS: 20000, // Increased from 10000
+			connectTimeoutMS: 20000,
 			heartbeatFrequencyMS: 10000,
 			retryWrites: true,
 			retryReads: true,
@@ -92,14 +106,25 @@ async function connectToDatabase(retryCount = 0): Promise<void> {
 
 		// Verify connection is actually established
 		if (mongoose.connection.readyState !== 1) {
+			console.error('Connection not ready after connect. State:', mongoose.connection.readyState);
 			throw new Error(`Connection not ready after connect. State: ${mongoose.connection.readyState}`);
 		}
 
 		isConnected = true;
 		connectionAttempts = 0;
-		console.log('MongoDB connected successfully');
+		console.log('MongoDB connected successfully:', {
+			host: mongoose.connection.host,
+			name: mongoose.connection.name,
+			readyState: mongoose.connection.readyState,
+			timestamp: new Date().toISOString()
+		});
 	} catch (error) {
-		console.error(`MongoDB connection error (attempt ${retryCount + 1}/${MAX_RETRIES}):`, error);
+		console.error(`MongoDB connection error (attempt ${retryCount + 1}/${MAX_RETRIES}):`, {
+			error: error instanceof Error ? error.message : 'Unknown error',
+			stack: error instanceof Error ? error.stack : undefined,
+			readyState: mongoose.connection.readyState,
+			timestamp: new Date().toISOString()
+		});
 		isConnected = false;
 
 		if (retryCount < MAX_RETRIES - 1) {
@@ -141,6 +166,76 @@ function getUserById(userId: string): User | null {
 io.on('connection', (socket) => {
 	console.log('Client connected:', socket.id);
 
+	// Add MongoDB test handler
+	socket.on('test-mongodb', async (data) => {
+		const startTime = Date.now();
+		console.log('📊 MongoDB test request received:', {
+			socketId: socket.id,
+			timestamp: data.timestamp,
+			test: data.test
+		});
+
+		try {
+			// Just check connection state without doing a query
+			const dbState = mongoose.connection.readyState;
+			const isConnected = dbState === 1;
+
+			// Only try to connect if not connected
+			if (!isConnected) {
+				console.log('🔄 MongoDB not connected, attempting quick connect...');
+				// Use a shorter timeout for the test
+				await mongoose.connect(process.env.MONGODB_URI!, {
+					serverSelectionTimeoutMS: 5000,  // 5 seconds
+					socketTimeoutMS: 10000,          // 10 seconds
+					connectTimeoutMS: 5000,          // 5 seconds
+					family: 4,
+					maxPoolSize: 1,                  // Minimal pool for test
+					minPoolSize: 0,
+					heartbeatFrequencyMS: 10000,
+					retryWrites: false,              // Disable retries for test
+					retryReads: false,
+					w: 1,                           // Lower write concern
+					wtimeoutMS: 1000,
+					autoIndex: false                // Disable auto-indexing for test
+				});
+			}
+
+			// Send immediate response
+			socket.emit('mongodb-test-response', {
+				success: true,
+				timestamp: data.timestamp,
+				serverReceiveTime: startTime,
+				serverProcessTime: Date.now() - startTime,
+				dbState: mongoose.connection.readyState,
+				isConnected: mongoose.connection.readyState === 1,
+				host: mongoose.connection.host,
+				name: mongoose.connection.name
+			});
+
+			console.log('📊 MongoDB test completed:', {
+				socketId: socket.id,
+				processTime: Date.now() - startTime,
+				dbState: mongoose.connection.readyState
+			});
+		} catch (error) {
+			console.error('❌ MongoDB test failed:', {
+				socketId: socket.id,
+				error,
+				processTime: Date.now() - startTime
+			});
+
+			socket.emit('mongodb-test-response', {
+				success: false,
+				timestamp: data.timestamp,
+				serverReceiveTime: startTime,
+				serverProcessTime: Date.now() - startTime,
+				error: error instanceof Error ? error.message : 'Unknown error',
+				dbState: mongoose.connection.readyState,
+				isConnected: false
+			});
+		}
+	});
+
 	socket.on(SocketEvent.JOIN_REQUEST, async ({ roomId, username, userId }) => {
 		try {
 			if (!roomId) {
@@ -148,23 +243,23 @@ io.on('connection', (socket) => {
 				return;
 			}
 
-			const isUsernameExist = getUsersInRoom(roomId).some(
-				(u) => u.username === username
+		const isUsernameExist = getUsersInRoom(roomId).some(
+			(u) => u.username === username
 			);
 			
-			if (isUsernameExist) {
+		if (isUsernameExist) {
 				socket.emit(SocketEvent.USERNAME_EXISTS);
 				return;
-			}
+		}
 
-			const user: User = {
-				username,
-				roomId,
-				status: USER_CONNECTION_STATUS.ONLINE,
-				cursorPosition: 0,
-				typing: false,
+		const user: User = {
+			username,
+			roomId,
+			status: USER_CONNECTION_STATUS.ONLINE,
+			cursorPosition: 0,
+			typing: false,
 				socketId: userId,
-				currentFile: null,
+			currentFile: null,
 			};
 
 			userSocketMap.push(user);
@@ -286,6 +381,92 @@ app.get('/api/test-db', async (req: Request, res: Response) => {
 			error: error instanceof Error ? error.message : 'Unknown error',
 			state: mongoose.connection.readyState,
 			isConnected
+		});
+	}
+});
+
+// Add a test endpoint to query specific user
+app.get('/api/test-user/:userId', async (req: Request, res: Response) => {
+	try {
+		const userId = req.params.userId;
+		console.log('Testing user query for ID:', userId);
+
+		// Ensure MongoDB is connected
+		if (mongoose.connection.readyState !== 1) {
+			await connectToDatabase();
+		}
+
+		// Query the specific user
+		const user = await UserModel.findById(userId);
+		
+		if (!user) {
+			return res.status(404).json({
+				success: false,
+				message: 'User not found',
+				query: { userId },
+				dbState: mongoose.connection.readyState
+			});
+		}
+
+		res.json({
+			success: true,
+			user,
+			dbState: mongoose.connection.readyState,
+			timestamp: new Date().toISOString()
+		});
+
+	} catch (error) {
+		console.error('Error querying user:', error);
+		res.status(500).json({
+			success: false,
+			error: error instanceof Error ? error.message : 'Unknown error',
+			dbState: mongoose.connection.readyState
+		});
+	}
+});
+
+// Add a simple test endpoint that's already available
+app.get('/api/test-db-user', async (req: Request, res: Response) => {
+	try {
+		console.log('Testing MongoDB user query...');
+
+		// Ensure MongoDB is connected
+		if (mongoose.connection.readyState !== 1) {
+			await connectToDatabase();
+		}
+
+		// Try to find any user
+		const user = await UserModel.findOne({});
+		
+		if (!user) {
+			return res.status(404).json({
+				success: false,
+				message: 'No users found in database',
+				dbState: mongoose.connection.readyState,
+				timestamp: new Date().toISOString()
+			});
+		}
+
+		res.json({
+			success: true,
+			message: 'Database connection successful',
+			user: {
+				id: user._id,
+				username: user.username,
+				roomId: user.roomId,
+				status: user.status
+			},
+			dbState: mongoose.connection.readyState,
+			timestamp: new Date().toISOString()
+		});
+
+	} catch (error) {
+		console.error('Error testing database:', error);
+		res.status(500).json({
+			success: false,
+			error: error instanceof Error ? error.message : 'Unknown error',
+			dbState: mongoose.connection.readyState,
+			timestamp: new Date().toISOString()
 		});
 	}
 });

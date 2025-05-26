@@ -1,4 +1,4 @@
-import mongoose, { Document, Schema } from "mongoose"
+import mongoose, { Document } from 'mongoose';
 import { USER_CONNECTION_STATUS } from "../types/user"
 
 export interface IUser extends Document {
@@ -13,48 +13,24 @@ export interface IUser extends Document {
     updatedAt: Date
 }
 
-const userSchema = new Schema<IUser>(
-    {
-        username: {
-            type: String,
-            required: true,
-            trim: true
-        },
-        socketId: {
-            type: String,
-            required: true,
-            unique: true
-        },
-        roomId: {
-            type: String,
-            required: true
-        },
-        status: {
-            type: String,
-            enum: Object.values(USER_CONNECTION_STATUS),
-            default: USER_CONNECTION_STATUS.OFFLINE
-        },
-        cursorPosition: {
-            type: Number,
-            default: 0
-        },
-        typing: {
-            type: Boolean,
-            default: false
-        },
-        currentFile: {
-            type: String,
-            default: null
-        }
-    },
-    {
-        timestamps: true
-    }
-)
+// Define the User schema
+const userSchema = new mongoose.Schema({
+    username: { type: String, required: true },
+    roomId: { type: String, required: true },
+    status: { type: String, enum: ['online', 'offline'], default: 'offline' },
+    cursorPosition: { type: Number, default: 0 },
+    typing: { type: Boolean, default: false },
+    currentFile: { type: String, default: null },
+    socketId: { type: String, required: true }
+}, {
+    timestamps: true,
+    collection: 'users' // Explicitly set collection name
+});
 
 // Index for faster queries
 userSchema.index({ roomId: 1, status: 1 })
 userSchema.index({ socketId: 1 }, { unique: true })
 userSchema.index({ updatedAt: 1 })
 
-export const User = mongoose.model<IUser>("User", userSchema)
+// Create and export the User model
+export const UserModel = mongoose.model('User', userSchema, 'users'); // Explicitly specify collection name
