@@ -23,6 +23,7 @@ import {
     useContext,
     useEffect,
     useState,
+    useRef,
 } from "react"
 import { toast } from "react-hot-toast"
 import { v4 as uuidv4 } from "uuid"
@@ -31,7 +32,7 @@ import { useSocket } from "./SocketContext"
 
 const FileContext = createContext<FileContextType | null>(null)
 
-export const useFileSystem = (): FileContextType => {
+const useFileSystem = (): FileContextType => {
     const context = useContext(FileContext)
     if (!context) {
         throw new Error("useFileSystem must be used within FileContextProvider")
@@ -39,9 +40,10 @@ export const useFileSystem = (): FileContextType => {
     return context
 }
 
-function FileContextProvider({ children }: { children: ReactNode }) {
-    const { socket } = useSocket()
+const FileContextProvider = ({ children }: { children: ReactNode }) => {
+    const { socket, isConnected, status } = useSocket()
     const { setUsers, drawingData } = useAppContext()
+    const isMountedRef = useRef(true)
 
     const [fileStructure, setFileStructure] =
         useState<FileSystemItem>(initialFileStructure)
@@ -631,154 +633,149 @@ function FileContextProvider({ children }: { children: ReactNode }) {
         })
     }
 
-    const handleUserJoined = useCallback(
-        ({ user }: { user: RemoteUser }) => {
-            toast.success(`${user.username} joined the room`)
-
-            // Send the code and drawing data to the server
-            socket.emit(SocketEvent.SYNC_FILE_STRUCTURE, {
-                fileStructure,
-                openFiles,
-                activeFile,
-                socketId: user.socketId,
-            })
-
-            socket.emit(SocketEvent.SYNC_DRAWING, {
-                drawingData,
-                socketId: user.socketId,
-            })
-
-            setUsers((prev) => [...prev, user])
-        },
-        [activeFile, drawingData, fileStructure, openFiles, setUsers, socket],
-    )
-
-    const handleFileStructureSync = useCallback(
-        ({
-            fileStructure,
-            openFiles,
-            activeFile,
-        }: {
-            fileStructure: FileSystemItem
-            openFiles: FileSystemItem[]
-            activeFile: FileSystemItem | null
-        }) => {
-            setFileStructure(fileStructure)
-            setOpenFiles(openFiles)
-            setActiveFile(activeFile)
-            toast.dismiss()
-        },
-        [],
-    )
-
-    const handleDirCreated = useCallback(
-        ({
-            parentDirId,
-            newDirectory,
-        }: {
-            parentDirId: Id
-            newDirectory: FileSystemItem
-        }) => {
-            createDirectory(parentDirId, newDirectory, false)
-        },
-        [createDirectory],
-    )
-
-    const handleDirUpdated = useCallback(
-        ({ dirId, children }: { dirId: Id; children: FileSystemItem[] }) => {
-            updateDirectory(dirId, children, false)
-        },
-        [updateDirectory],
-    )
-
-    const handleDirRenamed = useCallback(
-        ({ dirId, newName }: { dirId: Id; newName: FileName }) => {
-            renameDirectory(dirId, newName, false)
-        },
-        [renameDirectory],
-    )
-
-    const handleDirDeleted = useCallback(
-        ({ dirId }: { dirId: Id }) => {
-            deleteDirectory(dirId, false)
-        },
-        [deleteDirectory],
-    )
-
-    const handleFileCreated = useCallback(
-        ({
-            parentDirId,
-            newFile,
-        }: {
-            parentDirId: Id
-            newFile: FileSystemItem
-        }) => {
-            createFile(parentDirId, newFile, false)
-        },
-        [createFile],
-    )
-
-    const handleFileUpdated = useCallback(
-        ({ fileId, newContent }: { fileId: Id; newContent: FileContent }) => {
-            updateFileContent(fileId, newContent)
-            // Update the content of the active file if it's the same file
-            if (activeFile?.id === fileId) {
-                setActiveFile({ ...activeFile, content: newContent })
-            }
-        },
-        [activeFile, updateFileContent],
-    )
-
-    const handleFileRenamed = useCallback(
-        ({ fileId, newName }: { fileId: string; newName: FileName }) => {
-            renameFile(fileId, newName, false)
-        },
-        [renameFile],
-    )
-
-    const handleFileDeleted = useCallback(
-        ({ fileId }: { fileId: Id }) => {
-            deleteFile(fileId, false)
-        },
-        [deleteFile],
-    )
+    useEffect(() => {
+        isMountedRef.current = true;
+        return () => {
+            isMountedRef.current = false;
+        };
+    }, []);
 
     useEffect(() => {
-        socket.once(SocketEvent.SYNC_FILE_STRUCTURE, handleFileStructureSync)
-        socket.on(SocketEvent.USER_JOINED, handleUserJoined)
-        socket.on(SocketEvent.DIRECTORY_CREATED, handleDirCreated)
-        socket.on(SocketEvent.DIRECTORY_UPDATED, handleDirUpdated)
-        socket.on(SocketEvent.DIRECTORY_RENAMED, handleDirRenamed)
-        socket.on(SocketEvent.DIRECTORY_DELETED, handleDirDeleted)
-        socket.on(SocketEvent.FILE_CREATED, handleFileCreated)
-        socket.on(SocketEvent.FILE_UPDATED, handleFileUpdated)
-        socket.on(SocketEvent.FILE_RENAMED, handleFileRenamed)
-        socket.on(SocketEvent.FILE_DELETED, handleFileDeleted)
+        if (!socket || !isConnected) return;
+
+        const handleFileStructureSync = ({ fileStructure, openFiles, activeFile }: {
+            fileStructure: FileSystemItem;
+            openFiles: FileSystemItem[];
+            activeFile: FileSystemItem | null;
+        }) => {
+            if (!isMountedRef.current) return;
+            setFileStructure(fileStructure);
+            setOpenFiles(openFiles);
+            setActiveFile(activeFile);
+        };
+
+        const handleUserJoined = ({ user }: { user: RemoteUser }) => {
+            if (!isMountedRef.current) return;
+            toast.success(`${user.username} joined the room`);
+
+            // Send the code and drawing data to the server
+            if (socket.connected) {
+                socket.emit(SocketEvent.SYNC_FILE_STRUCTURE, {
+                    fileStructure,
+                    openFiles,
+                    activeFile,
+                    socketId: user.socketId,
+                });
+
+                socket.emit(SocketEvent.SYNC_DRAWING, {
+                    drawingData,
+                    socketId: user.socketId,
+                });
+            }
+
+            setUsers((prev) => [...prev, user]);
+        };
+
+        const handleDirCreated = ({ parentDirId, newDirectory }: {
+            parentDirId: string;
+            newDirectory: FileSystemItem;
+        }) => {
+            if (!isMountedRef.current) return;
+            createDirectory(parentDirId, newDirectory, false);
+        };
+
+        const handleDirUpdated = ({ dirId, children }: {
+            dirId: string;
+            children: FileSystemItem[];
+        }) => {
+            if (!isMountedRef.current) return;
+            updateDirectory(dirId, children, false);
+        };
+
+        const handleDirRenamed = ({ dirId, newDirName }: {
+            dirId: string;
+            newDirName: string;
+        }) => {
+            if (!isMountedRef.current) return;
+            renameDirectory(dirId, newDirName, false);
+        };
+
+        const handleDirDeleted = ({ dirId }: { dirId: string }) => {
+            if (!isMountedRef.current) return;
+            deleteDirectory(dirId, false);
+        };
+
+        const handleFileCreated = ({ parentDirId, newFile }: {
+            parentDirId: string;
+            newFile: FileSystemItem;
+        }) => {
+            if (!isMountedRef.current) return;
+            createFile(parentDirId, newFile, false);
+        };
+
+        const handleFileUpdated = ({ fileId, content }: {
+            fileId: string;
+            content: string;
+        }) => {
+            if (!isMountedRef.current) return;
+            updateFileContent(fileId, content, false);
+        };
+
+        const handleFileRenamed = ({ fileId, newName }: {
+            fileId: string;
+            newName: string;
+        }) => {
+            if (!isMountedRef.current) return;
+            renameFile(fileId, newName, false);
+        };
+
+        const handleFileDeleted = ({ fileId }: { fileId: string }) => {
+            if (!isMountedRef.current) return;
+            deleteFile(fileId, false);
+        };
+
+        // Set up event listeners
+        socket.once(SocketEvent.SYNC_FILE_STRUCTURE, handleFileStructureSync);
+        socket.on(SocketEvent.USER_JOINED, handleUserJoined);
+        socket.on(SocketEvent.DIRECTORY_CREATED, handleDirCreated);
+        socket.on(SocketEvent.DIRECTORY_UPDATED, handleDirUpdated);
+        socket.on(SocketEvent.DIRECTORY_RENAMED, handleDirRenamed);
+        socket.on(SocketEvent.DIRECTORY_DELETED, handleDirDeleted);
+        socket.on(SocketEvent.FILE_CREATED, handleFileCreated);
+        socket.on(SocketEvent.FILE_UPDATED, handleFileUpdated);
+        socket.on(SocketEvent.FILE_RENAMED, handleFileRenamed);
+        socket.on(SocketEvent.FILE_DELETED, handleFileDeleted);
 
         return () => {
-            socket.off(SocketEvent.USER_JOINED)
-            socket.off(SocketEvent.DIRECTORY_CREATED)
-            socket.off(SocketEvent.DIRECTORY_UPDATED)
-            socket.off(SocketEvent.DIRECTORY_RENAMED)
-            socket.off(SocketEvent.DIRECTORY_DELETED)
-            socket.off(SocketEvent.FILE_CREATED)
-            socket.off(SocketEvent.FILE_UPDATED)
-            socket.off(SocketEvent.FILE_RENAMED)
-            socket.off(SocketEvent.FILE_DELETED)
-        }
+            if (socket) {
+                socket.off(SocketEvent.USER_JOINED, handleUserJoined);
+                socket.off(SocketEvent.DIRECTORY_CREATED, handleDirCreated);
+                socket.off(SocketEvent.DIRECTORY_UPDATED, handleDirUpdated);
+                socket.off(SocketEvent.DIRECTORY_RENAMED, handleDirRenamed);
+                socket.off(SocketEvent.DIRECTORY_DELETED, handleDirDeleted);
+                socket.off(SocketEvent.FILE_CREATED, handleFileCreated);
+                socket.off(SocketEvent.FILE_UPDATED, handleFileUpdated);
+                socket.off(SocketEvent.FILE_RENAMED, handleFileRenamed);
+                socket.off(SocketEvent.FILE_DELETED, handleFileDeleted);
+            }
+        };
     }, [
-        handleDirCreated,
-        handleDirDeleted,
-        handleDirRenamed,
-        handleDirUpdated,
-        handleFileCreated,
-        handleFileDeleted,
-        handleFileRenamed,
-        handleFileStructureSync,
-        handleFileUpdated,
-        handleUserJoined,
         socket,
-    ])
+        isConnected,
+        createDirectory,
+        updateDirectory,
+        renameDirectory,
+        deleteDirectory,
+        createFile,
+        updateFileContent,
+        renameFile,
+        deleteFile,
+        fileStructure,
+        openFiles,
+        activeFile,
+        drawingData,
+        setUsers,
+    ]);
 
     return (
         <FileContext.Provider
@@ -807,5 +804,4 @@ function FileContextProvider({ children }: { children: ReactNode }) {
     )
 }
 
-export { FileContextProvider }
-export default FileContext
+export { FileContext, FileContextProvider, useFileSystem }
