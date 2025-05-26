@@ -105,14 +105,6 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 
 	// Initialize socket
 	const initializeSocket = useCallback(() => {
-		// In development, prevent multiple initializations
-		if (isDevelopment && hasEverInitialized.current) {
-			if (!isDevelopment) {
-				console.log('🛑 Socket initialization skipped - already initialized in development')
-			}
-			return
-		}
-
 		if (!isMountedRef.current || isInitializedRef.current) {
 			if (!isDevelopment) {
 				console.log('🛑 Socket initialization skipped - already initialized or unmounted')
@@ -136,13 +128,13 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 			setStatus('connecting')
 			toast.loading('Connecting to server...', { id: 'connection-status' })
 
-			// Create new socket instance with optimized settings
+			// Create new socket instance with more resilient settings
 			const newSocket = io(BACKEND_URL, {
 				path: '/socket.io',
-				transports: ['websocket'], // Only use websocket for better performance
-				reconnectionAttempts: 3, // Reduce reconnection attempts
-				reconnectionDelay: 1000, // Reduce reconnection delay
-				timeout: 10000, // Reduce timeout
+				transports: ['websocket', 'polling'], // Allow fallback to polling
+				reconnectionAttempts: 5,
+				reconnectionDelay: 1000,
+				timeout: 20000, // Increased timeout
 				forceNew: true,
 				autoConnect: false,
 				withCredentials: true,
@@ -151,10 +143,10 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 				port: new URL(BACKEND_URL).port || (BACKEND_URL.startsWith('https') ? '443' : '80'),
 				secure: BACKEND_URL.startsWith('https'),
 				rejectUnauthorized: false,
-				upgrade: false, // Disable upgrade since we're only using websocket
-				rememberUpgrade: false,
+				upgrade: true, // Enable upgrade
+				rememberUpgrade: true,
 				perMessageDeflate: {
-					threshold: 1024 // Reduce threshold for faster messages
+					threshold: 1024
 				}
 			})
 
@@ -204,7 +196,7 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 
 			// Set up event handlers before connecting
 			const handleConnect = () => {
-				if (!isMountedRef.current) return
+				if (!isMountedRef.current || !socketRef.current) return
 				const connectionTime = Date.now() - startTime
 				console.log('✅ Socket connected successfully', {
 					socketId: newSocket.id,
@@ -243,7 +235,10 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 					icon: '❌'
 				})
 
-				if (reason !== 'io client disconnect' && reason !== 'io server disconnect') {
+				// Only attempt reconnect for certain disconnect reasons
+				if (reason === 'io server disconnect' || 
+					reason === 'transport close' || 
+					reason === 'ping timeout') {
 					console.log('🔄 Scheduling reconnect attempt...')
 					toast.loading('Attempting to reconnect...', { id: 'connection-status' })
 					reconnectTimeoutRef.current = setTimeout(() => {
@@ -251,7 +246,7 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 							console.log('🔄 Attempting to reconnect...')
 							initializeSocket()
 						}
-					}, 5000)
+					}, 2000) // Reduced reconnect delay
 				}
 			}
 
@@ -318,8 +313,32 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 			isInitializedRef.current = true
 			hasEverInitialized.current = true
 
-			// Connect immediately
-			newSocket.connect()
+			// Connect with retry
+			const connectWithRetry = () => {
+				try {
+					newSocket.connect()
+				} catch (error) {
+					console.error('Failed to connect:', error)
+					if (isMountedRef.current) {
+						setStatus('error')
+						setIsConnected(false)
+						setSocket(null)
+						isInitializedRef.current = false
+						toast.error('Failed to initialize connection: ' + (error instanceof Error ? error.message : 'Unknown error'), { 
+							id: 'connection-status',
+							duration: 5000,
+							icon: '❌'
+						})
+						// Retry initialization after delay
+						setTimeout(() => {
+							if (isMountedRef.current) {
+								initializeSocket()
+							}
+						}, 5000)
+					}
+				}
+			}
+			connectWithRetry()
 
 		} catch (error) {
 			console.error('❌ Failed to initialize socket:', error)
@@ -333,6 +352,12 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 					duration: 5000,
 					icon: '❌'
 				})
+				// Retry initialization after delay
+				setTimeout(() => {
+					if (isMountedRef.current) {
+						initializeSocket()
+					}
+				}, 5000)
 			}
 		}
 	}, [cleanup])

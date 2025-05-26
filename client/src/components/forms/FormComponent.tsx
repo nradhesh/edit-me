@@ -51,7 +51,7 @@ const FormComponent = () => {
         e.preventDefault()
         if (status === USER_STATUS.ATTEMPTING_JOIN || isJoining) return
         if (!validateForm()) return
-        if (!isConnected) {
+        if (!socket || !isConnected) {
             toast.error("Not connected to server. Please wait...")
             return
         }
@@ -67,9 +67,17 @@ const FormComponent = () => {
                 setStatus(USER_STATUS.DISCONNECTED)
                 setIsJoining(false)
             }
-        }, 10000) // 10 second timeout
+        }, 10000)
 
-        socket.emit(SocketEvent.JOIN_REQUEST, currentUser)
+        try {
+            socket.emit(SocketEvent.JOIN_REQUEST, currentUser)
+        } catch (error) {
+            console.error('Error joining room:', error)
+            toast.error("Failed to join room. Please try again.", { id: 'join-status' })
+            setStatus(USER_STATUS.DISCONNECTED)
+            setIsJoining(false)
+            clearTimeout(joinTimeoutRef.current)
+        }
     }
 
     useEffect(() => {
@@ -83,8 +91,15 @@ const FormComponent = () => {
     }, [currentUser, location.state?.roomId, setCurrentUser])
 
     useEffect(() => {
+        if (!socket) return
+
         if (status === USER_STATUS.DISCONNECTED && !socket.connected) {
-            socket.connect()
+            try {
+                socket.connect()
+            } catch (error) {
+                console.error('Error connecting socket:', error)
+                toast.error("Failed to connect to server. Please refresh the page.")
+            }
             return
         }
 
@@ -103,8 +118,13 @@ const FormComponent = () => {
         } else if (status === USER_STATUS.JOINED && isRedirect) {
             sessionStorage.removeItem("redirect")
             setStatus(USER_STATUS.DISCONNECTED)
-            socket.disconnect()
-            socket.connect()
+            try {
+                socket.disconnect()
+                socket.connect()
+            } catch (error) {
+                console.error('Error reconnecting socket:', error)
+                toast.error("Failed to reconnect. Please refresh the page.")
+            }
         }
     }, [currentUser, location.state?.redirect, navigate, setStatus, socket, status])
 
