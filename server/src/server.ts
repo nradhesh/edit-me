@@ -24,8 +24,7 @@ const httpServer = createServer(app)
 const corsOptions = {
 	origin: [
 		process.env.CLIENT_URL || "http://localhost:5173",
-		"https://edit-me-client.vercel.app",
-		"https://edit-me.vercel.app"
+		"https://edit-me-48ii.vercel.app"  // Updated correct frontend URL
 	],
 	methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
 	allowedHeaders: ["Content-Type", "Authorization"],
@@ -40,12 +39,23 @@ app.use(express.static(path.join(__dirname, "public")))
 // Mount user routes
 app.use('/api/users', userRouter)
 
+// Initialize Socket.IO with updated settings
 const io = new Server(httpServer, {
 	cors: corsOptions,
 	path: '/socket.io',
-	transports: ['websocket'],
-	pingTimeout: 60000,
-	pingInterval: 25000
+	transports: ['polling', 'websocket'],  // Allow both transports
+	pingTimeout: 10000,  // Match frontend timeout
+	pingInterval: 25000,
+	connectTimeout: 10000,  // Match frontend timeout
+	allowEIO3: true,  // Allow Engine.IO v3 clients
+	allowUpgrades: true,  // Allow transport upgrades
+	cookie: {
+		name: 'io',
+		path: '/',
+		httpOnly: true,
+		sameSite: 'none',
+		secure: true
+	}
 })
 
 // MongoDB connection state

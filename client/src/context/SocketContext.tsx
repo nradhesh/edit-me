@@ -12,6 +12,14 @@ const isDevelopment = process.env.NODE_ENV === 'development'
 // Add a global ref to track if we've ever initialized
 const hasEverInitialized = { current: false }
 
+// Add connection status tracking
+const connectionStatus = {
+	attempts: 0,
+	lastAttempt: 0,
+	lastError: null as Error | null,
+	isReconnecting: false
+}
+
 interface SocketContext {
 	socket: Socket | null
 	isConnected: boolean
@@ -52,8 +60,8 @@ class SocketErrorBoundary extends React.Component<{ children: ReactNode }, { has
 }
 
 const useSocket = () => {
-    const context = useContext(SocketContext)
-    if (!context) {
+	const context = useContext(SocketContext)
+	if (!context) {
 		console.warn('useSocket used outside of SocketProvider, returning safe default')
 		return {
 			socket: null,
@@ -61,8 +69,8 @@ const useSocket = () => {
 			emit: () => console.warn('Socket not available'),
 			status: 'disconnected' as const
 		}
-    }
-    return context
+	}
+	return context
 }
 
 const SocketProvider = ({ children }: { children: ReactNode }) => {
@@ -118,13 +126,17 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 			console.log('🔄 Socket initialization started:', {
 				timestamp: new Date().toISOString(),
 				url: BACKEND_URL,
-				isInitialized: isInitializedRef.current
+				isInitialized: isInitializedRef.current,
+				connectionStatus
 			})
 		}
 
 		try {
 			cleanup()
 			retryAttemptsRef.current = 0 // Reset retry attempts on new initialization
+			connectionStatus.attempts++
+			connectionStatus.lastAttempt = Date.now()
+			connectionStatus.isReconnecting = true
 
 			console.log('🔌 Creating new socket connection...')
 			setStatus('connecting')
@@ -133,33 +145,28 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 			// Create new socket instance with more resilient settings
 			const newSocket = io(BACKEND_URL, {
 				path: '/socket.io',
-				transports: ['polling'], // Only use polling initially
-				reconnectionAttempts: 3, // Reduced attempts to avoid rapid retries
-				reconnectionDelay: 5000, // Increased delay between attempts
-				timeout: 10000, // Reduced timeout to fail faster
+				transports: ['polling', 'websocket'],  // Allow both transports
+				reconnectionAttempts: 5,  // Increased attempts
+				reconnectionDelay: 2000,  // Reduced delay for faster retries
+				timeout: 10000,  // Match server timeout
 				forceNew: true,
 				autoConnect: false,
-				withCredentials: false, // Disable credentials for CORS
+				withCredentials: true,  // Enable credentials for CORS
 				host: new URL(BACKEND_URL).host,
 				hostname: new URL(BACKEND_URL).hostname,
 				port: new URL(BACKEND_URL).port || (BACKEND_URL.startsWith('https') ? '443' : '80'),
 				secure: BACKEND_URL.startsWith('https'),
 				rejectUnauthorized: false,
-				upgrade: false, // Disable upgrade initially
-				rememberUpgrade: false,
-				perMessageDeflate: { threshold: 0 }, // Disable compression
+				upgrade: true,  // Enable upgrade
+				rememberUpgrade: true,
+				perMessageDeflate: { threshold: 0 },  // Disable compression
 				// Add query parameters for better connection tracking
 				query: {
 					clientTimestamp: Date.now(),
 					clientVersion: '1.0.0',
 					transport: 'polling',
-					clientId: Math.random().toString(36).substring(7) // Add unique client ID
-				},
-				// Add headers for better CORS handling
-				extraHeaders: {
-					'Access-Control-Allow-Origin': '*',
-					'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
-					'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+					clientId: Math.random().toString(36).substring(7),
+					reconnectAttempt: connectionStatus.attempts
 				}
 			})
 
@@ -211,12 +218,17 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 			const handleConnect = () => {
 				if (!isMountedRef.current || !socketRef.current) return
 				const connectionTime = Date.now() - startTime
+				connectionStatus.isReconnecting = false
+				connectionStatus.lastError = null
+				
 				console.log('✅ Socket connected successfully', {
 					socketId: newSocket.id,
 					timestamp: new Date().toISOString(),
 					transport: newSocket.io.engine.transport.name,
-					connectionTime: `${connectionTime}ms`
+					connectionTime: `${connectionTime}ms`,
+					connectionStatus
 				})
+				
 				setIsConnected(true)
 				setStatus('connected')
 				setSocket(newSocket)
@@ -225,17 +237,6 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 					duration: 2000,
 					icon: '✅'
 				})
-
-				// After successful polling connection, try to upgrade to WebSocket
-				setTimeout(() => {
-					if (socketRef.current?.connected) {
-						console.log('🔄 Attempting to upgrade to WebSocket...')
-						// Instead of using upgrade directly, we'll reconnect with WebSocket transport
-						socketRef.current.disconnect()
-						socketRef.current.io.opts.transports = ['polling', 'websocket']
-						socketRef.current.connect()
-					}
-				}, 2000)
 
 				// Test MongoDB in the background without blocking
 				if (shouldTestMongoRef.current) {
@@ -313,6 +314,9 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 
 			const handleConnectError = (error: Error) => {
 				if (!isMountedRef.current) return
+				connectionStatus.lastError = error
+				connectionStatus.isReconnecting = true
+				
 				console.error('❌ Socket connection error:', {
 					message: error.message,
 					type: error.name,
@@ -321,8 +325,10 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 					uptime: Date.now() - startTime,
 					url: BACKEND_URL,
 					transport: newSocket.io.engine?.transport?.name,
-					retryAttempt: retryAttemptsRef.current
+					retryAttempt: retryAttemptsRef.current,
+					connectionStatus
 				})
+				
 				setStatus('error')
 				setIsConnected(false)
 				setSocket(null)
@@ -338,7 +344,8 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 					fetch(BACKEND_URL, { 
 						method: 'HEAD',
 						mode: 'no-cors',
-						cache: 'no-cache'
+						cache: 'no-cache',
+						credentials: 'include'  // Include credentials
 					}).then(() => {
 						toast.error('Server is reachable but socket connection failed. Will retry...', { 
 							id: 'connection-status',
@@ -350,11 +357,6 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 							duration: 5000
 						})
 					})
-					
-					// Force polling transport on poll error
-					if (socketRef.current) {
-						socketRef.current.io.opts.transports = ['polling']
-					}
 				} else {
 					toast.error('Failed to connect: ' + error.message, { 
 						id: 'connection-status',
@@ -389,9 +391,6 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 			// Connect with retry
 			const connectWithRetry = () => {
 				try {
-					// Ensure we're using polling transport
-					newSocket.io.opts.transports = ['polling']
-					
 					// Add connection timeout
 					const connectionTimeout = setTimeout(() => {
 						if (!newSocket.connected) {
@@ -404,6 +403,7 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 					newSocket.once('connect', () => {
 						clearTimeout(connectionTimeout)
 						retryAttemptsRef.current = 0 // Reset retry attempts on successful connection
+						connectionStatus.attempts = 0 // Reset connection attempts
 					})
 
 					newSocket.connect()
@@ -454,7 +454,7 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 		}
 	}, [cleanup])
 
-    useEffect(() => {
+	useEffect(() => {
 		if (!isDevelopment) {
 			console.log('SocketProvider mounted, checking initialization...')
 		}
@@ -473,7 +473,7 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 			console.log('Socket already initialized, skipping initialization')
 		}
 
-        return () => {
+		return () => {
 			if (!isDevelopment) {
 				console.log('SocketProvider unmounting, cleaning up...')
 			}
@@ -507,13 +507,13 @@ const SocketProvider = ({ children }: { children: ReactNode }) => {
 		status
 	}
 
-    return (
+	return (
 		<SocketErrorBoundary>
 			<SocketContext.Provider value={value}>
-            {children}
-        </SocketContext.Provider>
+				{children}
+			</SocketContext.Provider>
 		</SocketErrorBoundary>
-    )
+	)
 }
 
 // Single export statement at the end

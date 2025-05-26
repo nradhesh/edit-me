@@ -13,7 +13,7 @@ services:
       - key: MONGODB_URI
         sync: false
       - key: CLIENT_URL
-        value: https://edit-me-client.vercel.app
+        value: https://edit-me-48ii.vercel.app
       - key: PORT
         value: 10000
     healthCheckPath: /api/health
